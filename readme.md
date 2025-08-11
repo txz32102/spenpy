@@ -93,5 +93,5 @@ An example workflow is available in **`demo.ipynb`**.
 ## **Install**
 
 ```bash
-pip install -e git+https://github.com/txz32102/spenpy.git@main
+pip install git+https://github.com/txz32102/spenpy.git@main
 ```
