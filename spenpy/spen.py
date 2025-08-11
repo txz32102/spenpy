@@ -159,8 +159,26 @@ def calcInvA(a_rad2cmsqr, LPE, NumPE, ShiftPE, SPENAcquireSign, ky1RelativePos, 
     return InvA, AFinal
 
 
+def check_data(data: torch.Tensor):
+    if torch.is_complex(data):
+        max_val = torch.abs(data).max()
+        min_val = torch.abs(data).min()
+    else:
+        max_val = data.max()
+        min_val = data.min()
 
-class V1:
+    mean_val = data.mean()
+    std_val = data.std()
+
+    try:
+        element = data[10, 11]
+    except Exception as e:
+        element = None
+
+    return [mean_val.item(), max_val.item(), min_val.item(), std_val.item(), element.item()]
+
+
+class spen:
     def __init__(self, L=[4, 4], acq_point=[256, 256], nseg=1, chirp_rvalue=120, tblip=128e-6, gamma_hz=4.2574e+3, device='cpu'):
         self.L = L
         self.acq_point = acq_point
@@ -201,42 +219,52 @@ class V1:
         self.alfa = self.a_sign * 2 * np.pi * gamma_hz * self.GPEe * self.rfwdth / (self.procpar_struct['lpe'])
         self.x_scale = torch.linspace(-L[0] / 2, L[0] / 2, self.N[0], device=device)
         self.y_scale = torch.linspace(-L[1] / 2, L[1] / 2, self.N[1], device=device)
+    
+    def get_InvA(self):
+        return calcInvA(self.alfa, self.L[0], self.N[0], 0, self.a_sign, 0, 0.9)
+    
+    def get_phase_map(self,H):
+        Hb = F.interpolate(H.unsqueeze(0), size=(self.acq_point[0], self.acq_point[1] * 16), mode='bilinear')
+        Hb = Hb.squeeze(1)
 
-    def calc_invA(self, alfa, LPE, NumPE, ShiftPE, SPENAcquireSign, ky1RelativePos, GaussRelativeWidth):
-        MaxPhase = alfa * LPE**2
-        NumPixels = NumPE
-        NumPixelsFinal = NumPE
-        Partitions = SPENAcquireSign * torch.linspace(-LPE / 2, LPE / 2, NumPixels + 1) + ShiftPE / 10
-        PartitionsFinal = SPENAcquireSign * torch.linspace(-LPE / 2, LPE / 2, NumPixelsFinal + 1) + ShiftPE / 10
-        ky = -2 * SPENAcquireSign * alfa * torch.arange(NumPE) * LPE / NumPE
-        b = -ky[0] + -2 * alfa * (Partitions[0] + (Partitions[1] - Partitions[0]) * ky1RelativePos)
-        MaxPhase = MaxPhase[0]
-        b = b[0]
-        ky = ky[0, :]
-        AFinal = self.calc_sr_matrix_approx(MaxPhase, NumPixelsFinal, ky, PartitionsFinal, b)
-        GaussWeightVar = (GaussRelativeWidth * np.pi * NumPixelsFinal**2 / MaxPhase)**2
-        yk = -(b + ky) / 2 / alfa
-        yPixels = (PartitionsFinal[:-1] + PartitionsFinal[1:]) / 2
-        DistMat = NumPixelsFinal / LPE * (yk.unsqueeze(1) - yPixels.unsqueeze(0))
-        GaussWeight = torch.exp(-DistMat**2 / (2 * GaussWeightVar))
-        AGaussWeighted = AFinal * GaussWeight
-        InvA = AGaussWeighted.T
-        return InvA, AFinal
+        images = Hb
 
-    def calc_sr_matrix_approx(self, MaxPhase, NumPixelsFinal, ky, PartitionsFinal, b):
-        AFinal = torch.eye(NumPixelsFinal)  # Placeholder for the super-resolution matrix
-        return AFinal
+        KspaceTest = fft_xspace_to_kspace_3d_batch(fft_xspace_to_kspace_3d_batch(images, 0), 1)
+        KspaceTestZero = torch.zeros([Hb.shape[0], int(self.acq_point[0] / 2), self.acq_point[1]], dtype=torch.complex64)
+        lines = 10
+        stard_idx_zero_x =  int(KspaceTestZero.shape[1] / 2) - lines
+        end_idx_zero_x =  int(KspaceTestZero.shape[1] / 2) + lines
+        stard_idx_zero_y =  int(KspaceTestZero.shape[2] / 2) - lines
+        end_idx_zero_y =  int(KspaceTestZero.shape[2] / 2) + lines
+        
+        stard_idx_x =  int(KspaceTest.shape[1] / 2) - lines
+        end_idx_x =  int(KspaceTest.shape[1] / 2) + lines
+        stard_idx_y =  int(KspaceTest.shape[2] / 2) - lines
+        end_idx_y =  int(KspaceTest.shape[2] / 2) + lines
+        
+        
+        KspaceTestZero[:, stard_idx_zero_x : end_idx_zero_x, stard_idx_zero_y : end_idx_zero_y] = KspaceTest[:, stard_idx_x : end_idx_x, stard_idx_y : end_idx_y]
 
-    def hardcode(self, H):
-        H = H.permute(0, 2, 1)
-        Hb = F.interpolate(H.unsqueeze(0), size=(self.acq_point[0], self.acq_point[1] * 16), mode='bilinear', align_corners=False)
+        map_img = fft_kspace_to_xspace_3d_batch(fft_kspace_to_xspace_3d_batch(KspaceTestZero, 0), 1)
+        map_img = torch.abs(map_img) / torch.max(torch.abs(map_img))
+        EvenOddLinear = 0 * (torch.rand(1, 1, device=self.device) - 0.5)
+        EvenOddConstant = 0 * (torch.rand(1, 1, device=self.device) - 0.5)
+
+        linspace_vals = torch.linspace(-self.L[0] / 2, self.L[0] / 2, self.acq_point[0], device=self.device)
+
+        phase_map = (torch.ones((self.acq_point[1] // 2 // self.nseg, 1), device=self.device) * (2 * torch.pi * (EvenOddLinear[0] * linspace_vals + EvenOddConstant[0]))) + 2 * torch.pi * map_img
+        return phase_map
+    
+    def sim(self, H, return_phase_map=False):
+        Hb = F.interpolate(H.permute(0, 2, 1).unsqueeze(1), size=(self.acq_point[0], self.acq_point[1] * 16), mode='bilinear')
         Hb = Hb.squeeze(1)
         seg_random = 0.00 * self.L[1] / 100 * torch.rand(1).item()
         phase_map_ideal = torch.zeros(Hb.shape[0], self.nseg, self.acq_point[0], int(self.acq_point[1] / self.nseg))
         
         for k in range(self.nseg):
             p = 0 * torch.rand(7)
-            start = -self.L[1] / 2 + (k - 1) * self.L[1] / self.acq_point[1] + seg_random
+            # 
+            start = -self.L[1] / 2 + k * self.L[1] / self.acq_point[1] + seg_random
             step = self.L[1] / (self.acq_point[1] / self.nseg)
             end = start + (self.acq_point[1] / self.nseg - 1) * step
             temp_yacq = torch.arange(start, end + step, step)
@@ -254,32 +282,33 @@ class V1:
             y_grid, temp_yacq_grid = torch.meshgrid(self.y, temp_yacq)
             b0y_grid, b0acq_grid = torch.meshgrid(b0y, b0acq)
             part1 = (y_grid + b0y_grid) - (temp_yacq_grid + b0acq_grid)
-            part2 = (temp_yacq_grid + b0acq_grid)
+            part2 = temp_yacq_grid + b0acq_grid
             exp_term = torch.exp(1j * self.alfa * (part1**2 - part2**2))
             exp_term = exp_term.to(torch.complex64)
             spin_density = Hb
             motion_imag = spin_density
             motion_imag = motion_imag.to(torch.complex64)
             temprxyacq = torch.matmul(motion_imag.view(1, 256, 4096), exp_term)
-            motion_phase_map = polyval2(p, self.y, self.x).unsqueeze(0)
             
+            motion_phase_map = polyval2(p, self.y, self.x).unsqueeze(0)
             motion_phase_map = F.interpolate(motion_phase_map.unsqueeze(0), size=temprxyacq.shape[1:], mode='bilinear', align_corners=False).squeeze(1)
             motion_phase_map_complex = torch.exp(1j * motion_phase_map)
             phase_map_ideal[:, k, :, :] = motion_phase_map
             temprxyacq = temprxyacq * motion_phase_map_complex
-            
-            temprxyacq = fft_xspace_to_kspace_3d_batch(temprxyacq, 0)      
-            img = fft_kspace_to_xspace_3d_batch(temprxyacq, 0)
+            temprxyacq = temprxyacq.permute(0, 2, 1)
+
+            temprxyacq = fft_xspace_to_kspace_3d_batch(temprxyacq, 1)      
+            img = fft_kspace_to_xspace_3d_batch(temprxyacq, 1)
             im_odd = img[:, 0::2, :] 
             im_even = img[:, 1::2, :] 
-            # Nonlinear phase modification for odd nseg and even k
+            
             if self.nseg % 2 == 1:
                 if k % 2 == 0:
                     images = H
 
                     KspaceTest = fft_xspace_to_kspace_3d_batch(fft_xspace_to_kspace_3d_batch(images, 0), 1)
-                    KspaceTestZero = torch.zeros([Hb.shape[0], int(self.acq_point[0] / 2), self.acq_point[1]])
-                    lines = 2
+                    KspaceTestZero = torch.zeros([Hb.shape[0], int(self.acq_point[0] / 2), self.acq_point[1]], dtype=torch.complex64)
+                    lines = 10
                     stard_idx_zero_x =  int(KspaceTestZero.shape[1] / 2) - lines
                     end_idx_zero_x =  int(KspaceTestZero.shape[1] / 2) + lines
                     stard_idx_zero_y =  int(KspaceTestZero.shape[2] / 2) - lines
@@ -292,26 +321,35 @@ class V1:
                     
                     
                     KspaceTestZero[:, stard_idx_zero_x : end_idx_zero_x, stard_idx_zero_y : end_idx_zero_y] = KspaceTest[:, stard_idx_x : end_idx_x, stard_idx_y : end_idx_y]
+
                     map_img = fft_kspace_to_xspace_3d_batch(fft_kspace_to_xspace_3d_batch(KspaceTestZero, 0), 1)
                     map_img = torch.abs(map_img) / torch.max(torch.abs(map_img))
-                    map_img = np.pi * map_img
-                    emap = torch.cos(map_img) + 1j * torch.sin(map_img)
+                    emap = torch.cos(2*np.pi*map_img) + 1j * torch.sin(2*np.pi*map_img)
+                    EvenOddLinear = 0 * (torch.rand(1, 1, device=self.device) - 0.5)
+                    EvenOddConstant = 0 * (torch.rand(1, 1, device=self.device) - 0.5)
 
+                    linspace_vals = torch.linspace(-self.L[0] / 2, self.L[0] / 2, self.acq_point[0], device=self.device)
+
+                    phase_map = (torch.ones((self.acq_point[1] // 2 // self.nseg, 1), device=self.device) * 
+                                (2 * torch.pi * (EvenOddLinear[0] * linspace_vals + EvenOddConstant[0]))) + 2 * torch.pi * map_img
                     im_even = im_even * emap
                     img[:, 1::2, :] = im_even
-                    
+    
             temprxyacq = fft_xspace_to_kspace_3d_batch(img, 1)
             temprxyacq = fft_kspace_to_xspace_3d_batch(temprxyacq, 1)
             motion_phase_map1 = polyval2(p, self.y, self.x).unsqueeze(0)
-            motion_phase_map1 = F.interpolate(motion_phase_map1.unsqueeze(0), size=temprxyacq.shape[1:], mode='bilinear', align_corners=False).squeeze(1)
+            motion_phase_map1 = F.interpolate(motion_phase_map1.unsqueeze(0), size=temprxyacq.shape[1:], mode='bilinear').squeeze(1)
             motion_phase_map_complex1 = torch.exp(-0j * motion_phase_map1)
             temprxyacq = temprxyacq * motion_phase_map_complex1
             temprxyacq = fft_xspace_to_kspace_3d_batch(temprxyacq, 1)
             temprxyacq = temprxyacq / torch.max(torch.abs(temprxyacq))
             
-            noise_level = 0.0 * 0.015 / math.sqrt(128)
+            noise_level = 0. / math.sqrt(128)
             final_rxyacq = temprxyacq + noise_level * torch.randn_like(temprxyacq)
             final_rxyacq_ROFFT = fft_kspace_to_xspace_3d_batch(final_rxyacq, 1)
-            final_rxyacq_ROFFT = final_rxyacq_ROFFT.permute(0, 2, 1)
 
-        return final_rxyacq_ROFFT
+
+        if(return_phase_map):
+            return final_rxyacq_ROFFT, phase_map
+        else:
+            return final_rxyacq_ROFFT
