@@ -224,7 +224,7 @@ class spen:
         return calcInvA(self.alfa, self.L[0], self.N[0], 0, self.a_sign, 0, 0.9)
     
     def get_phase_map(self,H):
-        Hb = F.interpolate(H.unsqueeze(0), size=(self.acq_point[0], self.acq_point[1] * 16), mode='bilinear')
+        Hb = F.interpolate(H.unsqueeze(1), size=(self.acq_point[0], self.acq_point[1] * 16), mode='bilinear')
         Hb = Hb.squeeze(1)
 
         images = Hb
@@ -279,8 +279,8 @@ class spen:
                      self.Ydire_inhomo_coef[2] * temp_yacq**2 + 
                      self.Ydire_inhomo_coef[3] * temp_yacq**3)
             
-            y_grid, temp_yacq_grid = torch.meshgrid(self.y, temp_yacq)
-            b0y_grid, b0acq_grid = torch.meshgrid(b0y, b0acq)
+            y_grid, temp_yacq_grid = torch.meshgrid(self.y, temp_yacq,  indexing="ij")
+            b0y_grid, b0acq_grid = torch.meshgrid(b0y, b0acq,  indexing="ij")
             part1 = (y_grid + b0y_grid) - (temp_yacq_grid + b0acq_grid)
             part2 = temp_yacq_grid + b0acq_grid
             exp_term = torch.exp(1j * self.alfa * (part1**2 - part2**2))
@@ -288,7 +288,7 @@ class spen:
             spin_density = Hb
             motion_imag = spin_density
             motion_imag = motion_imag.to(torch.complex64)
-            temprxyacq = torch.matmul(motion_imag.view(1, 256, 4096), exp_term)
+            temprxyacq = torch.matmul(motion_imag.view(H.shape[0], self.acq_point[0], self.acq_point[1] * 16), exp_term)
             
             motion_phase_map = polyval2(p, self.y, self.x).unsqueeze(0)
             motion_phase_map = F.interpolate(motion_phase_map.unsqueeze(0), size=temprxyacq.shape[1:], mode='bilinear', align_corners=False).squeeze(1)
