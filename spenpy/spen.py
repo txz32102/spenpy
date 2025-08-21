@@ -61,6 +61,7 @@ def MathSinc(x):
     # MathSinc implementation (sinc function is sin(pi*x)/(pi*x))
     return torch.sinc(x / np.pi)
 
+@torch.no_grad()
 def calcSRMatrixApprox(MaxPhase, NumPixels, k, Partitions, b=None, ZeroThreshold=None):
     DefaultZeroThreshold = 10 * torch.finfo(torch.float32).eps
 
@@ -114,6 +115,7 @@ def calcSRMatrixApprox(MaxPhase, NumPixels, k, Partitions, b=None, ZeroThreshold
 
     return A, ADerivative, IdxPositions, PartitionsUsed
 
+@torch.no_grad()
 def calcInvA(a_rad2cmsqr, LPE, NumPE, ShiftPE, SPENAcquireSign, ky1RelativePos, GaussRelativeWidth):
     MaxPhase = a_rad2cmsqr * LPE**2  # [rad]
 
@@ -223,6 +225,7 @@ class spen:
     def get_InvA(self):
         return calcInvA(self.alfa, self.L[0], self.N[0], 0, self.a_sign, 0, 0.9)
     
+    @torch.no_grad()
     def get_phase_map(self,H):
         Hb = F.interpolate(H.unsqueeze(1), size=(self.acq_point[0], self.acq_point[1] * 16), mode='bilinear')
         Hb = Hb.squeeze(1)
@@ -255,6 +258,7 @@ class spen:
         phase_map = (torch.ones((self.acq_point[1] // 2 // self.nseg, 1), device=self.device) * (2 * torch.pi * (EvenOddLinear[0] * linspace_vals + EvenOddConstant[0]))) + 2 * torch.pi * map_img
         return phase_map
     
+    @torch.no_grad()
     def sim(self, H, return_phase_map=False):
         Hb = F.interpolate(H.permute(0, 2, 1).unsqueeze(1), size=(self.acq_point[0], self.acq_point[1] * 16), mode='bilinear')
         Hb = Hb.squeeze(1)
