@@ -1,2 +1,4 @@
 .vscode
-spenpy/__pycache__
+__pycache__
+build
+spenpy.egg-info
