@@ -181,7 +181,7 @@ def check_data(data: torch.Tensor):
 
 
 class spen:
-    def __init__(self, L=[4, 4], acq_point=[256, 256], nseg=1, chirp_rvalue=120, tblip=128e-6, gamma_hz=4.2574e+3, device='cpu'):
+    def __init__(self, L=[4, 4], acq_point=[256, 256], nseg=1, chirp_rvalue=120, tblip=128e-6, gamma_hz=4.2574e+3, device='cpu', noise_level=0.0):
         self.L = L
         self.acq_point = acq_point
         self.N = [acq_point[0], acq_point[1] * 16]
@@ -193,7 +193,7 @@ class spen:
         self.tblip = tblip
         self.gamma_hz = gamma_hz
         self.device = device
-
+        self.noise_level = noise_level
         self.spectrum = 0
         self.sw = 250000
         self.one_shot_num = acq_point[1] / nseg
@@ -226,7 +226,7 @@ class spen:
         return calcInvA(self.alfa, self.L[0], self.N[0], 0, self.a_sign, 0, 0.9)
     
     @torch.no_grad()
-    def get_phase_map(self,H):
+    def get_phase_map(self, H, noise_level=0.0):
         Hb = F.interpolate(H.unsqueeze(1), size=(self.acq_point[0], self.acq_point[1] * 16), mode='bilinear')
         Hb = Hb.squeeze(1)
 
@@ -250,8 +250,8 @@ class spen:
 
         map_img = fft_kspace_to_xspace_3d_batch(fft_kspace_to_xspace_3d_batch(KspaceTestZero, 0), 1)
         map_img = torch.abs(map_img) / torch.max(torch.abs(map_img))
-        EvenOddLinear = 0 * (torch.rand(1, 1, device=self.device) - 0.5)
-        EvenOddConstant = 0 * (torch.rand(1, 1, device=self.device) - 0.5)
+        EvenOddLinear = noise_level * 2 * (torch.rand(1, 1, device=self.device) - 0.5)
+        EvenOddConstant = noise_level * 2 * (torch.rand(1, 1, device=self.device) - 0.5)
 
         linspace_vals = torch.linspace(-self.L[0] / 2, self.L[0] / 2, self.acq_point[0], device=self.device)
 
@@ -267,7 +267,7 @@ class spen:
         
         for k in range(self.nseg):
             p = 0 * torch.rand(7)
-            # 
+
             start = -self.L[1] / 2 + k * self.L[1] / self.acq_point[1] + seg_random
             step = self.L[1] / (self.acq_point[1] / self.nseg)
             end = start + (self.acq_point[1] / self.nseg - 1) * step
@@ -348,8 +348,7 @@ class spen:
             temprxyacq = fft_xspace_to_kspace_3d_batch(temprxyacq, 1)
             temprxyacq = temprxyacq / torch.max(torch.abs(temprxyacq))
             
-            noise_level = 0. / math.sqrt(128)
-            final_rxyacq = temprxyacq + noise_level * torch.randn_like(temprxyacq)
+            final_rxyacq = temprxyacq + self.noise_level * torch.randn_like(temprxyacq)
             final_rxyacq_ROFFT = fft_kspace_to_xspace_3d_batch(final_rxyacq, 1)
 
 
