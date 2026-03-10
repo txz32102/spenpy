@@ -27,6 +27,7 @@ def fft_xspace_to_kspace_3d_batch(PreFFT, dim):
     return apply_fftshift_to_batch(apply_ifft_to_batch(apply_ifftshift_to_batch(PreFFT, dim=dim), dim=dim), dim=dim)
 
 def polyval2(p, x, y):
+    device = p.device
     # Ensure x and y are tensors
     x = x.view(-1, 1)  # Reshape x to be a column vector
     y = y.view(1, -1)  # Reshape y to be a row vector
@@ -44,6 +45,7 @@ def polyval2(p, x, y):
     
     # Create Vandermonde matrix
     V = torch.ones((pts, lp))
+    V = V.to(device)
     ordercolumn = 1
     for order in range(1, int(n) + 1):
         for ordercolumn in range(ordercolumn, ordercolumn + order):
@@ -266,7 +268,7 @@ class spen:
         phase_map_ideal = torch.zeros(Hb.shape[0], self.nseg, self.acq_point[0], int(self.acq_point[1] / self.nseg))
         
         for k in range(self.nseg):
-            p = 0 * torch.rand(7)
+            p = 0 * torch.rand(7, device=self.device)
 
             start = -self.L[1] / 2 + k * self.L[1] / self.acq_point[1] + seg_random
             step = self.L[1] / (self.acq_point[1] / self.nseg)
@@ -283,8 +285,8 @@ class spen:
                      self.Ydire_inhomo_coef[2] * temp_yacq**2 + 
                      self.Ydire_inhomo_coef[3] * temp_yacq**3)
             
-            y_grid, temp_yacq_grid = torch.meshgrid(self.y, temp_yacq,  indexing="ij", device=self.device)
-            b0y_grid, b0acq_grid = torch.meshgrid(b0y, b0acq,  indexing="ij", device=self.device)
+            y_grid, temp_yacq_grid = torch.meshgrid(self.y, temp_yacq,  indexing="ij")
+            b0y_grid, b0acq_grid = torch.meshgrid(b0y, b0acq,  indexing="ij")
             part1 = (y_grid + b0y_grid) - (temp_yacq_grid + b0acq_grid)
             part2 = temp_yacq_grid + b0acq_grid
             exp_term = torch.exp(1j * self.alfa * (part1**2 - part2**2))
@@ -311,7 +313,7 @@ class spen:
                     images = H
 
                     KspaceTest = fft_xspace_to_kspace_3d_batch(fft_xspace_to_kspace_3d_batch(images, 0), 1)
-                    KspaceTestZero = torch.zeros([Hb.shape[0], int(self.acq_point[0] / 2), self.acq_point[1]], dtype=torch.complex64)
+                    KspaceTestZero = torch.zeros([Hb.shape[0], int(self.acq_point[0] / 2), self.acq_point[1]], dtype=torch.complex64, device=self.device)
                     lines = 10
                     stard_idx_zero_x =  int(KspaceTestZero.shape[1] / 2) - lines
                     end_idx_zero_x =  int(KspaceTestZero.shape[1] / 2) + lines
