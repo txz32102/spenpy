@@ -185,8 +185,8 @@ class spen:
         self.L = L
         self.acq_point = acq_point
         self.N = [acq_point[0], acq_point[1] * 16]
-        self.x = torch.linspace(-L[0] / 2, L[0] / 2, self.N[0])
-        self.y = torch.linspace(-L[1] / 2, L[1] / 2, self.N[1])
+        self.x = torch.linspace(-L[0] / 2, L[0] / 2, self.N[0], device=device)
+        self.y = torch.linspace(-L[1] / 2, L[1] / 2, self.N[1], device=device)
         self.Ydire_inhomo_coef = 0 * torch.tensor([0.001, 0.001, 0.00, 0.00], dtype=torch.float32, device=device) * L[1]
         self.nseg = nseg
         self.chirp_rvalue = chirp_rvalue
