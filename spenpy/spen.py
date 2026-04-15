@@ -261,11 +261,13 @@ class spen:
         return phase_map
     
     @torch.no_grad()
-    def sim(self, H, return_phase_map=False):
+    def sim(self, H, return_phase_map=False, return_good_image=False): # <-- Added return_good_image flag
         Hb = F.interpolate(H.permute(0, 2, 1).unsqueeze(1), size=(self.acq_point[0], self.acq_point[1] * 16), mode='bilinear')
         Hb = Hb.squeeze(1)
         seg_random = 0.00 * self.L[1] / 100 * torch.rand(1).item()
         phase_map_ideal = torch.zeros(Hb.shape[0], self.nseg, self.acq_point[0], int(self.acq_point[1] / self.nseg))
+    
+        good_image = torch.zeros((Hb.shape[0], self.acq_point[1], self.acq_point[0]), dtype=torch.complex64, device=self.device)
         
         for k in range(self.nseg):
             p = 0 * torch.rand(7, device=self.device)
@@ -296,6 +298,7 @@ class spen:
             motion_imag = motion_imag.to(torch.complex64)
             temprxyacq = torch.matmul(motion_imag.view(H.shape[0], self.acq_point[0], self.acq_point[1] * 16), exp_term)
             
+            good_image[:, k::self.nseg, :] = temprxyacq.permute(0, 2, 1)
             motion_phase_map = polyval2(p, self.y, self.x).unsqueeze(0)
             motion_phase_map = F.interpolate(motion_phase_map.unsqueeze(0), size=temprxyacq.shape[1:], mode='bilinear', align_corners=False).squeeze(1)
             motion_phase_map_complex = torch.exp(1j * motion_phase_map)
@@ -336,8 +339,7 @@ class spen:
 
                     linspace_vals = torch.linspace(-self.L[0] / 2, self.L[0] / 2, self.acq_point[0], device=self.device)
 
-                    phase_map = (torch.ones((self.acq_point[1] // 2 // self.nseg, 1), device=self.device) * 
-                                (2 * torch.pi * (EvenOddLinear[0] * linspace_vals + EvenOddConstant[0]))) + 2 * torch.pi * map_img
+                    phase_map = (torch.ones((self.acq_point[1] // 2 // self.nseg, 1), device=self.device) * (2 * torch.pi * (EvenOddLinear[0] * linspace_vals + EvenOddConstant[0]))) + 2 * torch.pi * map_img
                     im_even = im_even * emap
                     img[:, 1::2, :] = im_even
     
@@ -353,8 +355,16 @@ class spen:
             final_rxyacq = temprxyacq + self.noise_level * torch.randn_like(temprxyacq)
             final_rxyacq_ROFFT = fft_kspace_to_xspace_3d_batch(final_rxyacq, 1)
 
+        # Calculate max absolute value per slice in the batch for scaling
+        max_vals = torch.max(torch.abs(good_image).view(good_image.shape[0], -1), dim=1)[0]
+        good_image = good_image / max_vals.view(-1, 1, 1)
 
-        if(return_phase_map):
+        # --- NEW: 4. Adjusted Return statements ---
+        if return_phase_map and return_good_image:
+            return final_rxyacq_ROFFT, phase_map, good_image
+        elif return_good_image:
+            return final_rxyacq_ROFFT, good_image
+        elif return_phase_map:
             return final_rxyacq_ROFFT, phase_map
         else:
             return final_rxyacq_ROFFT

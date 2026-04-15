@@ -50,13 +50,14 @@ final_rxyacq_ROFFT = spen().sim(img.unsqueeze(0))  # Shape: (B, W, H)
 phase_map = spen().get_phase_map(img.unsqueeze(0))
 
 # Save results
-save_tensor_as_image(final_rxyacq_ROFFT[0].abs(), "corrupted.png")
-save_tensor_as_image(phase_map[0].abs(), "phase_map.png")
+save_tensor_as_image(final_rxyacq_ROFFT[0].abs(), "corrupted.png") # Shape: (B, W, H)
+save_tensor_as_image(phase_map[0].abs(), "phase_map.png") # Shape: (B, W/2, H)
 ```
 
 ### **2. Simple Reconstruction Using $A^{-1}$**
 
 ```python
+import torch
 InvA, _ = spen().get_InvA()
 
 # Apply phase correction to even lines
