@@ -1,0 +1,219 @@
+"""Bruker ParaVision image data reader.
+
+Ported from ImageDataObject.m + readBruker2dseq.m.
+Reads pdata/N/2dseq binary image files with visu_pars metadata.
+"""
+
+import os
+import re
+import numpy as np
+
+
+def read_bruker_2dseq(pdata_dir: str) -> np.ndarray:
+    """Read Bruker 2dseq processed image data.
+
+    Equivalent to MATLAB:
+        imageObj = ImageDataObject(fullfile(rare_dir, 'pdata', '1'));
+        ImageData = squeeze(imageObj.data);
+
+    Args:
+        pdata_dir: path to pdata/N/ directory (e.g. .../10/pdata/1/)
+
+    Returns:
+        data: numpy array with shape matching VisuCoreSize + frame count.
+              Complex if VisuCoreFrameType == 'COMPLEX_IMAGE'.
+    """
+    path_to_2dseq = os.path.join(pdata_dir, "2dseq")
+    path_to_visu = os.path.join(pdata_dir, "visu_pars")
+
+    if not os.path.exists(path_to_2dseq):
+        raise FileNotFoundError(f"2dseq not found: {path_to_2dseq}")
+    if not os.path.exists(path_to_visu):
+        raise FileNotFoundError(f"visu_pars not found: {path_to_visu}")
+
+    visu = _read_visu_params(path_to_visu)
+    data = _read_2dseq_binary(path_to_2dseq, visu)
+    return data
+
+
+def _read_visu_params(visu_path: str) -> dict:
+    """Parse key parameters from visu_pars file."""
+    params = {}
+
+    with open(visu_path, "r") as f:
+        content = f.read()
+
+    # Parse VisuCoreSize -- handles ( N ) val1 val2 ... and ( N, M ) val1 val2 ...
+    m = re.search(
+        r"##\$visucore\s*size\s*=\s*\(\s*([\d,\s]+)\)\s*\n\s*(.+?)(?=\n##\$|\n\$\$|\Z)",
+        content, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        dims = [int(d.strip()) for d in m.group(1).split(",")]
+        vals = [int(v) for v in m.group(2).split()]
+        params["VisuCoreSize"] = vals if vals else dims
+    else:
+        # Fallback: try single dim
+        m = re.search(r"##\$visucore\s*size\s*=\s*\(\s*(\d+)\s*\)\s*\n\s*(\d+)", content, re.IGNORECASE)
+        if m:
+            params["VisuCoreSize"] = [int(m.group(2))]
+
+    # Parse VisuCoreFrameCount
+    m = re.search(r"##\$visucore\s*frame\s*count\s*=\s*(\d+)", content, re.IGNORECASE)
+    if m:
+        params["VisuCoreFrameCount"] = int(m.group(1))
+
+    # Parse VisuCoreDim
+    m = re.search(r"##\$visucore\s*dim\s*=\s*(\d+)", content, re.IGNORECASE)
+    if m:
+        params["VisuCoreDim"] = int(m.group(1))
+
+    # Parse VisuCoreWordType
+    m = re.search(r"##\$visucore\s*word\s*type\s*=\s*(\S+)", content, re.IGNORECASE)
+    if m:
+        params["VisuCoreWordType"] = m.group(1)
+
+    # Parse VisuCoreByteOrder
+    m = re.search(r"##\$visucore\s*byte\s*order\s*=\s*(\S+)", content, re.IGNORECASE)
+    if m:
+        params["VisuCoreByteOrder"] = m.group(1)
+
+    # Parse VisuCoreFrameType
+    m = re.search(r"##\$visucore\s*frame\s*type\s*=\s*(\S+)", content, re.IGNORECASE)
+    if m:
+        params["VisuCoreFrameType"] = m.group(1)
+
+    # Parse VisuCoreDataSlope
+    m = re.search(
+        r"##\$visucore\s*data\s*slope\s*=\s*\(\s*(\d+)\s*\)\s*\n\s*(.+?)(?=\n##\$|\n\$\$|\Z)",
+        content, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        params["VisuCoreDataSlope"] = [float(v) for v in m.group(2).split()]
+
+    # Parse VisuCoreDataOffs
+    m = re.search(
+        r"##\$visucore\s*data\s*offs\s*=\s*\(\s*(\d+)\s*\)\s*\n\s*(.+?)(?=\n##\$|\n\$\$|\Z)",
+        content, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        params["VisuCoreDataOffs"] = [float(v) for v in m.group(2).split()]
+
+    # Parse VisuCoreDiskSliceOrder
+    m = re.search(r"##\$visucore\s*disk\s*slice\s*order\s*=\s*(\S+)", content, re.IGNORECASE)
+    if m:
+        params["VisuCoreDiskSliceOrder"] = m.group(1)
+
+    # Parse VisuCoreExtent
+    m = re.search(
+        r"##\$visucore\s*extent\s*=\s*\(\s*(\d+)\s*\)\s*\n\s*(.+?)(?=\n##\$|\n\$\$|\Z)",
+        content, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        params["VisuCoreExtent"] = [float(v) for v in m.group(2).split()]
+
+    return params
+
+
+def _read_2dseq_binary(filepath: str, visu: dict) -> np.ndarray:
+    """Read 2dseq binary file with proper dtype, endian, shape, and scaling."""
+
+    # Determine numpy dtype from VisuCoreWordType
+    word_type = visu.get("VisuCoreWordType", "_32BIT_SGN_INT")
+    dtype_map = {
+        "_32BIT_SGN_INT": "<i4",
+        "_16BIT_SGN_INT": "<i2",
+        "_32BIT_FLOAT": "<f4",
+        "_8BIT_UNSGN_INT": "u1",
+    }
+    dtype_str = dtype_map.get(word_type, "<i4")
+
+    byte_order = visu.get("VisuCoreByteOrder", "littleEndian")
+    if byte_order == "bigEndian":
+        dtype_str = dtype_str.replace("<", ">")
+    else:
+        dtype_str = dtype_str.replace(">", "<")
+
+    core_size = visu.get("VisuCoreSize", [256, 256])
+    ndim = visu.get("VisuCoreDim", 2)
+    frame_count = visu.get("VisuCoreFrameCount", 1)
+
+    frame_type = visu.get("VisuCoreFrameType", "MAGNITUDE_IMAGE")
+    is_complex = frame_type == "COMPLEX_IMAGE"
+
+    # Read flat binary data
+    data_flat = np.fromfile(filepath, dtype=dtype_str)
+
+    # MATLAB: fread(FileID, [VisuCoreSize(1), inf], format)
+    # Reads column-major: first column = all rows for frame 0
+    ncols = len(data_flat) // core_size[0]
+    data_2d = data_flat[:core_size[0] * ncols].reshape(core_size[0], ncols, order="F")
+
+    if is_complex:
+        half = data_2d.shape[1] // 2
+        real_part = data_2d[:, :half]
+        imag_part = data_2d[:, half:]
+        data_2d = real_part.astype(np.complex128) + 1j * imag_part.astype(np.complex128)
+        n_frames = frame_count
+    else:
+        data_2d = data_2d.astype(np.float64)
+        n_frames = frame_count
+
+    # Reshape to full dimensions
+    # The remaining columns after core_size[0] = product(core_size[1:]) * n_frames
+    remaining = data_2d.shape[1]
+
+    if len(core_size) >= 4:
+        expected = int(np.prod(core_size[1:4]) * n_frames)
+        if remaining == expected:
+            data_2d = data_2d.reshape(
+                core_size[0], core_size[1], core_size[2], core_size[3], n_frames, order="F",
+            )
+        else:
+            data_2d = data_2d.reshape(core_size[0], remaining, order="F")
+    elif len(core_size) >= 3:
+        expected = int(np.prod(core_size[1:3]) * n_frames)
+        if remaining == expected:
+            data_2d = data_2d.reshape(
+                core_size[0], core_size[1], core_size[2], n_frames, order="F",
+            )
+        else:
+            data_2d = data_2d.reshape(core_size[0], remaining, order="F")
+    elif len(core_size) >= 2:
+        expected = int(core_size[1] * n_frames)
+        if remaining == expected:
+            data_2d = data_2d.reshape(core_size[0], core_size[1], n_frames, order="F")
+        else:
+            data_2d = data_2d.reshape(core_size[0], remaining, order="F")
+    else:
+        # 1D data
+        data_2d = data_2d.reshape(core_size[0], n_frames, order="F")
+        if n_frames == 1:
+            data_2d = data_2d.squeeze(axis=-1)
+
+    # Apply slope/offset scaling
+    slope = visu.get("VisuCoreDataSlope", None)
+    offs = visu.get("VisuCoreDataOffs", None)
+
+    if slope is not None and len(slope) == n_frames and n_frames > 1:
+        slope_arr = np.array(slope, dtype=data_2d.dtype)
+        if offs is not None and len(offs) == n_frames:
+            offs_arr = np.array(offs, dtype=data_2d.dtype)
+        else:
+            offs_arr = np.zeros(n_frames, dtype=data_2d.dtype)
+        nd = data_2d.ndim
+        slope_shape = [1] * (nd - 1) + [n_frames]
+        data_2d = data_2d * slope_arr.reshape(slope_shape) + offs_arr.reshape(slope_shape)
+    elif slope is not None and len(slope) == 1:
+        # Single slope applies to all data
+        data_2d = data_2d * slope[0]
+        if offs is not None and len(offs) == 1:
+            data_2d = data_2d + offs[0]
+
+    # Handle disk slice order reversal
+    disk_order = visu.get("VisuCoreDiskSliceOrder", "")
+    if "reverse" in disk_order.lower() and ndim == 3:
+        if data_2d.ndim >= 3:
+            data_2d = np.flip(data_2d, axis=2)
+
+    return data_2d
