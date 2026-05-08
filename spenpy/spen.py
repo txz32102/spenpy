@@ -334,8 +334,8 @@ class spen:
                     map_img = fft_kspace_to_xspace_3d_batch(fft_kspace_to_xspace_3d_batch(KspaceTestZero, 0), 1)
                     map_img = torch.abs(map_img) / torch.max(torch.abs(map_img))
                     emap = torch.cos(2*np.pi*map_img) + 1j * torch.sin(2*np.pi*map_img)
-                    EvenOddLinear = 0 * (torch.rand(1, 1, device=self.device) - 0.5)
-                    EvenOddConstant = 0 * (torch.rand(1, 1, device=self.device) - 0.5)
+                    EvenOddLinear = 1 * (torch.rand(1, 1, device=self.device) - 0.5)
+                    EvenOddConstant = 1 * (torch.rand(1, 1, device=self.device) - 0.5)
 
                     linspace_vals = torch.linspace(-self.L[0] / 2, self.L[0] / 2, self.acq_point[0], device=self.device)
 
