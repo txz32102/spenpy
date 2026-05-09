@@ -10,3 +10,4 @@ dist
 *.npy
 imgs/
 *.pdf
+tests/pv360_verify_outputs*/

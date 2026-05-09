@@ -23,12 +23,11 @@ def read_datalist(file_dir: str):
     if not os.path.exists(datalist_path):
         raise FileNotFoundError(f"Datalist file not found at: {datalist_path}")
 
-    datalist = []
     with open(datalist_path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                datalist.append(int(line))
+        datalist = [int(token) for token in f.read().split()]
+
+    if len(datalist) < 2:
+        raise ValueError(f"Datalist must contain at least RARE and EPI scan IDs: {datalist_path}")
 
     rare_id = datalist[0]
     epi_id = datalist[1]
@@ -122,7 +121,6 @@ def process_spen(file_dir: str, scan_id: int, export_dir: str, spen_index: int):
     This reads the raw k-space and parameters, then calls the reconstruction
     pipeline if available.
     """
-    from spenpy.bruker.raw import read_bruker_kspace_pv360_fid_multichannel
     from spenpy.bruker.param import read_pv_param
 
     spen_dir = os.path.join(file_dir, str(scan_id), "")
@@ -140,26 +138,50 @@ def process_spen(file_dir: str, scan_id: int, export_dir: str, spen_index: int):
     print(f"    NSegments: {n_segments}")
     print(f"    EpiTrajAdjkx: {epi_traj is not None}")
 
-    # Read raw k-space data
-    kfield = read_bruker_kspace_pv360_fid_multichannel(spen_dir)
-    print(f"    kField shape: {kfield.shape}")
-
-    # For now, save the raw k-space data as output
-    # Full reconstruction would call the SPEN pipeline here
     os.makedirs(export_dir, exist_ok=True)
     save_name = f"ratbrain_SPEN_96_{spen_index}.mat"
     save_path = os.path.join(export_dir, save_name)
 
-    # Apply the same orientation flip as MATLAB: flip(flip(images, 1), 2)
-    # For k-space data, this means flipping dims 0 and 1
-    kfield_flipped = np.flip(np.flip(kfield, 0), 1)
+    if n_segments % 2 != 1:
+        raise NotImplementedError(
+            "PV360 even-segment SPEN reconstruction is not implemented yet; "
+            "the MATLAB path calls Function_Process_NormalmultiSPEN_bruker_PV6."
+        )
+
+    from spenpy.recon.spen_recon import orient_pv360_spen_image, reconstruct_odd_segments
+
+    recon = reconstruct_odd_segments(spen_dir)
+    image_spen = orient_pv360_spen_image(recon.images)
+
+    def to_numpy(value):
+        if hasattr(value, "detach"):
+            return value.detach().cpu().resolve_conj().numpy()
+        return np.asarray(value)
+
+    # The MATLAB pv360.m only applies ``flip(flip(images,1),2)`` to Image_SPEN
+    # but leaves Imag_low/Imag_origin in the raw (unflipped) orientation, so
+    # the three panels appear rotated 180 deg relative to each other. Apply
+    # the same orientation correction to all three so they line up with the
+    # canonical Image_SPEN view.
+    imag_low_oriented = orient_pv360_spen_image(to_numpy(recon.imag_low))
+    imag_origin_oriented = orient_pv360_spen_image(to_numpy(recon.imag_origin))
+
+    spen_az = {key: to_numpy(value) for key, value in recon.spen_az.items()}
 
     import scipy.io
-    scipy.io.savemat(save_path, {"kField": kfield, "kField_flipped": kfield_flipped,
-                                  "NSegments": n_segments})
+    scipy.io.savemat(
+        save_path,
+        {
+            "Imag_low": imag_low_oriented,
+            "Imag_origin": imag_origin_oriented,
+            "Image_SPEN": image_spen,
+            "SPEN_AZ": spen_az,
+            "NSegments": n_segments,
+        },
+    )
     print(f"    Saved: {save_path}")
 
-    return kfield
+    return image_spen
 
 
 def run_pv360(file_dir: str, export_dir: str = None):

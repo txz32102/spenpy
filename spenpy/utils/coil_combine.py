@@ -10,52 +10,54 @@ import torch.nn.functional as F
 def coil_combine(im1: torch.Tensor) -> torch.Tensor:
     """Combine multi-coil complex images using adaptive reconstruction.
 
-    Input shape:  [sx, sy, N_slices, N_coils]
-    Output shape: [sx, sy, N_slices]
+    Input shape:  [sx, sy], [sx, sy, N_coils], or [sx, sy, N_images, N_coils]
+    Output shape: [sx, sy] or [sx, sy, N_images]
 
     Based on: Walsh DO, Gmitro AF, Marcellin MW. Adaptive reconstruction
     of phased array MR imagery. Magn Reson Med 2000;43:682-690.
     """
     if im1.dim() == 2:
-        # Single-coil case
-        return im1.unsqueeze(-1)
+        return im1
+    if im1.dim() == 3:
+        im = im1.unsqueeze(2)
+        squeeze_n = True
+    elif im1.dim() == 4:
+        im = im1
+        squeeze_n = False
+    else:
+        raise ValueError("coil_combine expects a 2D, 3D, or 4D tensor")
 
-    sx, sy, N_coils = im1.shape[0], im1.shape[1], im1.shape[-1]
-    N = 1  # number of images (slices/arrays packed in last dim)
+    sx, sy, n_images, n_coils = im.shape
+    if n_coils == 1:
+        out = im[..., 0]
+        return out[..., 0] if squeeze_n else out
+
     filtsize = 7
 
-    # im1: [sx, sy, N_coils] -- no extra N dimension in typical usage
-    # Build correlation matrix using 2D smoothing
-    Rs = torch.zeros(sx, sy, N_coils, N_coils, dtype=im1.dtype, device=im1.device)
+    rs = torch.zeros(sx, sy, n_coils, n_coils, dtype=im.dtype, device=im.device)
+    kernel = torch.ones(1, 1, filtsize, filtsize, dtype=im.real.dtype, device=im.device)
 
-    for kc1 in range(N_coils):
-        for kc2 in range(N_coils):
-            prod = im1[:, :, kc1] * torch.conj(im1[:, :, kc2])
-            # filter2 with 'same' == 2D convolution, using uniform kernel
-            prod_real = prod.real
-            prod_imag = prod.imag
-            kernel = torch.ones(1, 1, filtsize, filtsize, device=im1.device)
-            smoothed_real = F.conv2d(
-                prod_real.unsqueeze(0).unsqueeze(0),
-                kernel,
-                padding=filtsize // 2,
-            ).squeeze()
-            smoothed_imag = F.conv2d(
-                prod_imag.unsqueeze(0).unsqueeze(0),
-                kernel,
-                padding=filtsize // 2,
-            ).squeeze()
-            Rs[:, :, kc1, kc2] = smoothed_real + 1j * smoothed_imag
+    for kc1 in range(n_coils):
+        for kc2 in range(n_coils):
+            acc = torch.zeros(sx, sy, dtype=im.dtype, device=im.device)
+            for kn in range(n_images):
+                prod = im[:, :, kn, kc1] * torch.conj(im[:, :, kn, kc2])
+                smoothed_real = F.conv2d(
+                    prod.real.unsqueeze(0).unsqueeze(0), kernel, padding=filtsize // 2
+                ).squeeze()
+                smoothed_imag = F.conv2d(
+                    prod.imag.unsqueeze(0).unsqueeze(0), kernel, padding=filtsize // 2
+                ).squeeze()
+                acc = acc + smoothed_real + 1j * smoothed_imag
+            rs[:, :, kc1, kc2] = acc
 
-    # SVD-based coil combination at each voxel
-    im2 = torch.zeros(sx, sy, dtype=im1.dtype, device=im1.device)
+    im2 = torch.zeros(sx, sy, n_images, dtype=im.dtype, device=im.device)
     for kx in range(sx):
         for ky in range(sy):
-            R_mat = Rs[kx, ky, :, :]  # [N_coils, N_coils]
+            R_mat = rs[kx, ky, :, :]
             U, _, _ = torch.linalg.svd(R_mat)
-            myfilt = U[:, 0]  # first left singular vector
-            im2[kx, ky] = torch.dot(
-                myfilt.conj(), im1[kx, ky, :]
-            )
+            myfilt = U[:, 0]
+            samples = im[kx, ky, :, :].transpose(0, 1)
+            im2[kx, ky, :] = myfilt.conj() @ samples
 
-    return im2
+    return im2[:, :, 0] if squeeze_n else im2

@@ -5,8 +5,8 @@ Reads pdata/N/2dseq binary image files with visu_pars metadata.
 """
 
 import os
-import re
 import numpy as np
+from spenpy.bruker.param import _extract_param_value
 
 
 def read_bruker_2dseq(pdata_dir: str) -> np.ndarray:
@@ -38,80 +38,25 @@ def read_bruker_2dseq(pdata_dir: str) -> np.ndarray:
 
 def _read_visu_params(visu_path: str) -> dict:
     """Parse key parameters from visu_pars file."""
-    params = {}
-
     with open(visu_path, "r") as f:
         content = f.read()
 
-    # Parse VisuCoreSize -- handles ( N ) val1 val2 ... and ( N, M ) val1 val2 ...
-    m = re.search(
-        r"##\$visucore\s*size\s*=\s*\(\s*([\d,\s]+)\)\s*\n\s*(.+?)(?=\n##\$|\n\$\$|\Z)",
-        content, re.IGNORECASE | re.DOTALL,
-    )
-    if m:
-        dims = [int(d.strip()) for d in m.group(1).split(",")]
-        vals = [int(v) for v in m.group(2).split()]
-        params["VisuCoreSize"] = vals if vals else dims
-    else:
-        # Fallback: try single dim
-        m = re.search(r"##\$visucore\s*size\s*=\s*\(\s*(\d+)\s*\)\s*\n\s*(\d+)", content, re.IGNORECASE)
-        if m:
-            params["VisuCoreSize"] = [int(m.group(2))]
-
-    # Parse VisuCoreFrameCount
-    m = re.search(r"##\$visucore\s*frame\s*count\s*=\s*(\d+)", content, re.IGNORECASE)
-    if m:
-        params["VisuCoreFrameCount"] = int(m.group(1))
-
-    # Parse VisuCoreDim
-    m = re.search(r"##\$visucore\s*dim\s*=\s*(\d+)", content, re.IGNORECASE)
-    if m:
-        params["VisuCoreDim"] = int(m.group(1))
-
-    # Parse VisuCoreWordType
-    m = re.search(r"##\$visucore\s*word\s*type\s*=\s*(\S+)", content, re.IGNORECASE)
-    if m:
-        params["VisuCoreWordType"] = m.group(1)
-
-    # Parse VisuCoreByteOrder
-    m = re.search(r"##\$visucore\s*byte\s*order\s*=\s*(\S+)", content, re.IGNORECASE)
-    if m:
-        params["VisuCoreByteOrder"] = m.group(1)
-
-    # Parse VisuCoreFrameType
-    m = re.search(r"##\$visucore\s*frame\s*type\s*=\s*(\S+)", content, re.IGNORECASE)
-    if m:
-        params["VisuCoreFrameType"] = m.group(1)
-
-    # Parse VisuCoreDataSlope
-    m = re.search(
-        r"##\$visucore\s*data\s*slope\s*=\s*\(\s*(\d+)\s*\)\s*\n\s*(.+?)(?=\n##\$|\n\$\$|\Z)",
-        content, re.IGNORECASE | re.DOTALL,
-    )
-    if m:
-        params["VisuCoreDataSlope"] = [float(v) for v in m.group(2).split()]
-
-    # Parse VisuCoreDataOffs
-    m = re.search(
-        r"##\$visucore\s*data\s*offs\s*=\s*\(\s*(\d+)\s*\)\s*\n\s*(.+?)(?=\n##\$|\n\$\$|\Z)",
-        content, re.IGNORECASE | re.DOTALL,
-    )
-    if m:
-        params["VisuCoreDataOffs"] = [float(v) for v in m.group(2).split()]
-
-    # Parse VisuCoreDiskSliceOrder
-    m = re.search(r"##\$visucore\s*disk\s*slice\s*order\s*=\s*(\S+)", content, re.IGNORECASE)
-    if m:
-        params["VisuCoreDiskSliceOrder"] = m.group(1)
-
-    # Parse VisuCoreExtent
-    m = re.search(
-        r"##\$visucore\s*extent\s*=\s*\(\s*(\d+)\s*\)\s*\n\s*(.+?)(?=\n##\$|\n\$\$|\Z)",
-        content, re.IGNORECASE | re.DOTALL,
-    )
-    if m:
-        params["VisuCoreExtent"] = [float(v) for v in m.group(2).split()]
-
+    params = {}
+    for name in [
+        "VisuCoreSize",
+        "VisuCoreFrameCount",
+        "VisuCoreDim",
+        "VisuCoreWordType",
+        "VisuCoreByteOrder",
+        "VisuCoreFrameType",
+        "VisuCoreDataSlope",
+        "VisuCoreDataOffs",
+        "VisuCoreDiskSliceOrder",
+        "VisuCoreExtent",
+    ]:
+        value = _extract_param_value(content, name)
+        if value is not None:
+            params[name] = value
     return params
 
 
@@ -119,7 +64,7 @@ def _read_2dseq_binary(filepath: str, visu: dict) -> np.ndarray:
     """Read 2dseq binary file with proper dtype, endian, shape, and scaling."""
 
     # Determine numpy dtype from VisuCoreWordType
-    word_type = visu.get("VisuCoreWordType", "_32BIT_SGN_INT")
+    word_type = str(visu.get("VisuCoreWordType", "_32BIT_SGN_INT")).upper()
     dtype_map = {
         "_32BIT_SGN_INT": "<i4",
         "_16BIT_SGN_INT": "<i2",
@@ -128,8 +73,8 @@ def _read_2dseq_binary(filepath: str, visu: dict) -> np.ndarray:
     }
     dtype_str = dtype_map.get(word_type, "<i4")
 
-    byte_order = visu.get("VisuCoreByteOrder", "littleEndian")
-    if byte_order == "bigEndian":
+    byte_order = str(visu.get("VisuCoreByteOrder", "littleEndian")).lower()
+    if byte_order == "bigendian":
         dtype_str = dtype_str.replace("<", ">")
     else:
         dtype_str = dtype_str.replace(">", "<")
@@ -138,7 +83,7 @@ def _read_2dseq_binary(filepath: str, visu: dict) -> np.ndarray:
     ndim = visu.get("VisuCoreDim", 2)
     frame_count = visu.get("VisuCoreFrameCount", 1)
 
-    frame_type = visu.get("VisuCoreFrameType", "MAGNITUDE_IMAGE")
+    frame_type = str(visu.get("VisuCoreFrameType", "MAGNITUDE_IMAGE")).upper()
     is_complex = frame_type == "COMPLEX_IMAGE"
 
     # Read flat binary data
@@ -211,7 +156,7 @@ def _read_2dseq_binary(filepath: str, visu: dict) -> np.ndarray:
             data_2d = data_2d + offs[0]
 
     # Handle disk slice order reversal
-    disk_order = visu.get("VisuCoreDiskSliceOrder", "")
+    disk_order = str(visu.get("VisuCoreDiskSliceOrder", ""))
     if "reverse" in disk_order.lower() and ndim == 3:
         if data_2d.ndim >= 3:
             data_2d = np.flip(data_2d, axis=2)

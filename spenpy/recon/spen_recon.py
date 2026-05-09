@@ -1,172 +1,329 @@
-"""Main SPEN reconstruction pipeline.
+"""Traditional PV360 SPEN reconstruction.
 
-Ported from Function_Process_NewPE_SPEN_OddNumWithMask_bruker_PV360.m.
+This module follows the data and shape path of
+``Function_Process_NewPE_SPEN_OddNumWithMask_bruker_PV360.m`` for the
+non-visual reconstruction core:
+
+raw/regridded k-space -> [PE, RO, channel, image] -> RO FFT ->
+SPEN weighted-adjoint SR matrix -> adaptive receiver combination.
 """
 
-import torch
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
 import numpy as np
-from spenpy.fft.transform import fft_kspace_to_xspace, fft_xspace_to_kspace
-from spenpy.utils.tensor import mult_mat_tensor
-from spenpy.utils.coil_combine import coil_combine
-from spenpy.utils.zero_fill import zero_filling_pv6, rm_zero_filling_pv6
-from spenpy.core.matrix import calcInvA
+import torch
+
 from spenpy.bruker.param import read_pv_param
+from spenpy.bruker.raw import read_bruker_kspace_pv360_fid_multichannel
+from spenpy.core.matrix import calcInvA
+from spenpy.fft.transform import fft_kspace_to_xspace, fft_xspace_to_kspace
+from spenpy.recon.gridding import one_d_regridding_pv360
+from spenpy.recon.phase import apply_pv360_one_shot_phase_correction
+from spenpy.utils.coil_combine import coil_combine
+from spenpy.utils.tensor import mult_mat_tensor
+from spenpy.utils.zero_fill import rm_zero_filling_pv6, zero_filling_pv6
 
 
+@dataclass
 class SpenReconResult:
-    """Container for SPEN reconstruction outputs."""
+    """Container matching the MATLAB output variables."""
 
-    def __init__(self):
-        self.images: torch.Tensor | None = None
-        self.imag_origin: torch.Tensor | None = None
-        self.imag_low: torch.Tensor | None = None
-        self.spen_az: dict = {}
+    images: torch.Tensor
+    imag_origin: torch.Tensor
+    imag_low: torch.Tensor
+    spen_az: dict[str, torch.Tensor] = field(default_factory=dict)
+    kfield: np.ndarray | None = None
+
+
+def _as_list(value, default=None):
+    if value is None:
+        return [] if default is None else list(default)
+    if isinstance(value, np.ndarray):
+        return value.reshape(-1).tolist()
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _as_int(value, default: int = 1) -> int:
+    vals = _as_list(value, [default])
+    return int(vals[0]) if vals else default
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    vals = _as_list(value, [default])
+    return float(vals[0]) if vals else default
+
+
+def _ensure_5d_kfield(kfield: np.ndarray) -> np.ndarray:
+    """Return k-space as [RO, PE, slice, array/receiver, echo]."""
+    kfield = np.asarray(kfield)
+    while kfield.ndim < 5:
+        kfield = kfield[..., np.newaxis]
+    if kfield.ndim > 5:
+        # MATLAB often carries trailing singleton dimensions. Keep the first
+        # echo-like axis and fold any remaining singleton axes away.
+        trailing = int(np.prod(kfield.shape[4:]))
+        kfield = np.reshape(kfield, (*kfield.shape[:4], trailing), order="F")
+    return kfield
+
+
+def _regrid_readout_if_needed(
+    kfield: np.ndarray,
+    fid_dir: str,
+    n_segments: int,
+    matrix_size: list[int],
+) -> np.ndarray:
+    traj = read_pv_param(fid_dir, "PVM_EpiTrajAdjkx")
+    if traj is None:
+        return kfield
+
+    traj_arr = np.asarray(traj, dtype=np.float64).reshape(1, -1)
+    if not np.any(traj_arr > 0):
+        return kfield
+
+    out = np.zeros(
+        (matrix_size[0], matrix_size[1], kfield.shape[2], kfield.shape[3], kfield.shape[4]),
+        dtype=np.complex128,
+    )
+    for echo in range(kfield.shape[4]):
+        for arr in range(kfield.shape[3]):
+            for sl in range(kfield.shape[2]):
+                out[:, :, sl, arr, echo] = one_d_regridding_pv360(
+                    kfield[:, :, sl, arr, echo],
+                    traj_arr,
+                    n_segments,
+                    matrix_size,
+                )
+    return out
+
+
+def _zero_fill_readout(kfield: np.ndarray, zf: int) -> tuple[np.ndarray, int]:
+    size_orig = kfield.shape[0]
+    zf = max(zf, size_orig)
+    if zf == size_orig:
+        return kfield, size_orig
+
+    filled = np.zeros((zf, *kfield.shape[1:]), dtype=kfield.dtype)
+    for echo in range(kfield.shape[4]):
+        for arr in range(kfield.shape[3]):
+            for sl in range(kfield.shape[2]):
+                filled[:, :, sl, arr, echo] = (
+                    zero_filling_pv6(torch.from_numpy(kfield[:, :, sl, arr, echo]), zf)
+                    .numpy()
+                )
+    return filled, size_orig
+
+
+def _remove_readout_zero_fill(images: torch.Tensor, size_orig: int) -> torch.Tensor:
+    if images.shape[0] == size_orig:
+        return images
+
+    kspace = fft_xspace_to_kspace(images, dim=0)
+    cropped = rm_zero_filling_pv6(kspace, size_orig)
+    return fft_kspace_to_xspace(cropped, dim=0)
+
+
+def _build_cmplx_data(kfield_echo: np.ndarray) -> tuple[torch.Tensor, int, int, int, int]:
+    """MATLAB ``CmplxData = permute(kField, [2 1 3])`` convention."""
+    ro, pe, slice_num2, array_num2 = kfield_echo.shape
+    matrix_slice_num = slice_num2
+
+    # MATLAB reshape is column-major. With a singleton slice dimension this
+    # folds receiver/array frames into the image index exactly as MATLAB does.
+    kfield_3d = np.reshape(kfield_echo, (ro, pe, slice_num2 * array_num2), order="F")
+    slice_num = kfield_3d.shape[2]
+    array_num = 1
+
+    cmplx_np = np.transpose(kfield_3d, (1, 0, 2))[:, :, np.newaxis, :]
+    cmplx_data = torch.from_numpy(np.ascontiguousarray(cmplx_np.astype(np.complex128)))
+    return cmplx_data, matrix_slice_num, slice_num2, array_num2, slice_num * array_num
+
+
+def _coil_combine_origin(
+    roffted_data: torch.Tensor,
+    pe: int,
+    ro: int,
+    slice_num2: int,
+    array_num2: int,
+) -> torch.Tensor:
+    imag = roffted_data.reshape(pe, ro, slice_num2, array_num2)
+    return coil_combine(imag).squeeze()
+
+
+def _coil_combine_sr(
+    sr_data: torch.Tensor,
+    pe: int,
+    ro: int,
+    num_receiver_images: int,
+) -> torch.Tensor:
+    # MATLAB: reshape(...,[PE,RO,SliceNum,ArrayNum]) with SliceNum holding
+    # the receiver frames, then permute(...,[1,2,4,3]) before coilCombinebao.
+    temp = sr_data[:, :, 0, :num_receiver_images].unsqueeze(3)
+    return coil_combine(temp.permute(0, 1, 3, 2)).squeeze()
 
 
 def reconstruct_odd_segments(
     fid_dir: str,
-    kfield: torch.Tensor | None = None,
+    kfield: np.ndarray | torch.Tensor | None = None,
     device: str = "cpu",
     debug_show: bool = False,
     process_with_pre_phase_corr: bool = True,
     smooth_motion_phase_between_shots: bool = True,
     b_amp_correct: bool = False,
+    zf: int = 0,
 ) -> SpenReconResult:
-    """Main SPEN reconstruction for odd-numbered segments.
+    """Reconstruct an odd-segment PV360 SPEN scan.
 
-    This is the Python equivalent of:
-        Function_Process_NewPE_SPEN_OddNumWithMask_bruker_PV360(fid_dir)
-
-    Args:
-        fid_dir: path to Bruker scan directory
-        kfield: pre-loaded k-space data (if None, will be loaded from fid_dir)
-        device: torch device
-        debug_show: enable debug plotting
-        process_with_pre_phase_corr: enable motion/inter-shot phase correction
-        smooth_motion_phase_between_shots: smooth shot-to-shot phase maps
-        b_amp_correct: enable amplitude correction
-
-    Returns:
-        SpenReconResult with images, imag_origin, imag_low, spen_az
+    The default phase-correction path follows the one-shot odd-segment branch
+    used by the PV360 MATLAB script. General multi-shot phase correction is not
+    implemented here.
     """
-    result = SpenReconResult()
+    del debug_show, b_amp_correct
 
-    # Read acquisition parameters
-    fov = read_pv_param(fid_dir, "PVM_Fov")
-    if fov is None:
-        fov = [40.0, 40.0]
-    if isinstance(fov, (int, float)):
-        fov = [fov, fov]
-    fov = [f / 10 for f in fov]  # mm to cm
+    fid_dir = str(Path(fid_dir))
+    matrix_size = [int(v) for v in _as_list(read_pv_param(fid_dir, "PVM_Matrix"), [256, 256])]
+    while len(matrix_size) < 2:
+        matrix_size.append(1)
 
-    lpe = fov[1]  # cm
-    lro = fov[0]
+    n_segments = _as_int(read_pv_param(fid_dir, "NSegments"), 1)
+    pvm_n_echo_images = _as_int(read_pv_param(fid_dir, "PVM_NEchoImages"), 1)
 
-    n_segments = read_pv_param(fid_dir, "NSegments")
-    if n_segments is None:
-        n_segments = 1
+    fov = [float(v) for v in _as_list(read_pv_param(fid_dir, "PVM_Fov"), [40.0, 40.0])]
+    while len(fov) < 2:
+        fov.append(fov[-1])
+    fov_cm = [v / 10 for v in fov]
+    lpe = fov_cm[1]
 
-    matrix_size_param = read_pv_param(fid_dir, "PVM_Matrix")
-    if matrix_size_param is None:
-        matrix_size_param = [256, 256]
-    if isinstance(matrix_size_param, int):
-        matrix_size_param = [matrix_size_param, matrix_size_param]
+    spen_gy = _as_float(read_pv_param(fid_dir, "SpenGyGaussStren"), 0.0)
+    tp = _as_float(read_pv_param(fid_dir, "SpatEncDuration"), 0.0) / 1000
+    ppe = -_as_float(read_pv_param(fid_dir, "PVM_SPackArrPhase1Offset"), 0.0) / 10
+    shift_pe = -ppe * 10
 
-    enc_n_receivers = read_pv_param(fid_dir, "PVM_EncNReceivers")
-    if enc_n_receivers is None:
-        enc_n_receivers = 1
-
-    pvm_n_echo_images = read_pv_param(fid_dir, "PVM_NEchoImages")
-    if pvm_n_echo_images is None:
-        pvm_n_echo_images = 1
-
-    spen_gy = read_pv_param(fid_dir, "SpenGyGaussStren")
-    if spen_gy is None:
-        spen_gy = 0.0
-
-    spat_enc_duration = read_pv_param(fid_dir, "SpatEncDuration")
-    if spat_enc_duration is None:
-        spat_enc_duration = 0.0
-    tp = spat_enc_duration / 1000  # ms to sec
-
-    gamma_hz = 4257.4  # Hz/G
-
-    # Chirp phase coefficient
+    gamma_hz = 4.2574e3
     a_sign = -1
-    rfwdth = tp
-    a_rad2cmsqr = a_sign * 2 * np.pi * gamma_hz * spen_gy * rfwdth / lpe
-
-    # SPEN acquisition sign
-    spen_acquire_sign = -a_sign
-    shift_pe = 0.0
-    ky1_relative_pos = 0.0
     gauss_relative_width = 0.8
+    a_rad2cmsqr_base = a_sign * 2 * np.pi * gamma_hz * spen_gy * tp / lpe
 
-    # If kfield not provided, load from raw data
     if kfield is None:
-        from spenpy.bruker.raw import read_bruker_kspace_pv360_fid_multichannel
-
         kfield_np = read_bruker_kspace_pv360_fid_multichannel(fid_dir)
-        kfield = torch.from_numpy(kfield_np).to(device)
+    elif isinstance(kfield, torch.Tensor):
+        kfield_np = kfield.detach().cpu().numpy()
+    else:
+        kfield_np = np.asarray(kfield)
 
-    # Process echoes
-    num_echoes = pvm_n_echo_images
-    slice_num = kfield.shape[2] if kfield.dim() > 2 else 1
-    array_num = kfield.shape[3] if kfield.dim() > 3 else 1
+    kfield_np = _ensure_5d_kfield(kfield_np)
+    kfield_np = _regrid_readout_if_needed(kfield_np, fid_dir, n_segments, matrix_size)
+    kfield_np, size_orig = _zero_fill_readout(kfield_np, zf)
+    kfield_np = kfield_np.astype(np.complex64, copy=False)
 
-    # Reshape kfield: [readout, PE, slice*array, echo, ...]
-    if kfield.dim() >= 4:
-        kfield = kfield.reshape(
-            kfield.shape[0], kfield.shape[1], slice_num * array_num, -1
-        )
+    last_images: torch.Tensor | None = None
+    last_origin: torch.Tensor | None = None
+    last_low: torch.Tensor | None = None
+    spen_az: dict[str, torch.Tensor] = {}
 
-    for i_ne in range(num_echoes):
-        if kfield.dim() == 4:
-            kfield_echo = kfield[:, :, :, i_ne]
-        else:
-            kfield_echo = kfield
-
-        # Even echo: flip PE direction and change chirp sign
-        phase_factor = -1 if i_ne % 2 == 0 else 1
-        a_rad2cmsqr_echo = phase_factor * a_rad2cmsqr
-
+    num_echoes = min(pvm_n_echo_images, kfield_np.shape[4])
+    for echo_idx in range(num_echoes):
+        kfield_echo = kfield_np[:, :, :, :, echo_idx]
+        phase_factor = -1 if (echo_idx + 1) % 2 == 0 else 1
         if phase_factor == -1:
-            kfield_echo = torch.flip(kfield_echo, [1])
+            kfield_echo = np.flip(kfield_echo, axis=1)
+        a_rad2cmsqr = phase_factor * a_rad2cmsqr_base
 
-        # Permute: [PE, readout, channel, image_index]
-        cmplx_data = kfield_echo.permute(1, 0, 2) if kfield_echo.dim() == 3 else kfield_echo.permute(1, 0, 2).unsqueeze(2)
-        if cmplx_data.dim() == 3:
-            cmplx_data = cmplx_data.unsqueeze(2)  # [PE, RO, 1, image_index]
+        cmplx_data, _matrix_slice_num, slice_num2, array_num2, num_images = _build_cmplx_data(kfield_echo)
+        cmplx_data = cmplx_data.to(device)
+        pe, ro = cmplx_data.shape[0], cmplx_data.shape[1]
 
-        # Image before correction (coil-combined origin image)
-        imag = fft_kspace_to_xspace(cmplx_data, dim=1)
-        result.imag_origin = coil_combine(imag.squeeze(2).permute(0, 1, 3, 2)) if imag.dim() == 4 else imag.squeeze()
-
-        # Readout-FFT data
         roffted_data = fft_kspace_to_xspace(cmplx_data, dim=1)
+        imag_origin = _coil_combine_origin(roffted_data, pe, ro, slice_num2, array_num2)
 
-        # Build InvA
         inv_a, a_final = calcInvA(
-            a_rad2cmsqr_echo, lpe, cmplx_data.shape[0],
-            shift_pe, spen_acquire_sign, ky1_relative_pos, gauss_relative_width
+            a_rad2cmsqr,
+            lpe,
+            pe,
+            shift_pe,
+            -a_sign,
+            0,
+            gauss_relative_width,
         )
+        inv_a = inv_a.to(device)
+        a_final = a_final.to(device)
 
-        # Apply SR reconstruction
-        sr_data = mult_mat_tensor(inv_a, roffted_data)
+        one_shot_odd_inv: torch.Tensor | None = None
+        one_shot_even_inv: torch.Tensor | None = None
+        if pe % 2 == 0:
+            one_shot_odd_inv, _ = calcInvA(
+                a_rad2cmsqr,
+                lpe,
+                pe // 2,
+                shift_pe,
+                -a_sign,
+                0,
+                gauss_relative_width,
+            )
+            one_shot_even_inv, _ = calcInvA(
+                a_rad2cmsqr,
+                lpe,
+                pe // 2,
+                shift_pe,
+                -a_sign,
+                0.5,
+                gauss_relative_width,
+            )
+            one_shot_odd_inv = one_shot_odd_inv.to(device)
+            one_shot_even_inv = one_shot_even_inv.to(device)
 
-        # Store reconstruction operators
-        if result.spen_az is None:
-            result.spen_az = {}
-        result.spen_az["tmpInvAZ"] = inv_a
-        result.spen_az["tmpAFinal"] = a_final
+        if (
+            process_with_pre_phase_corr
+            and n_segments == 1
+            and one_shot_odd_inv is not None
+            and one_shot_even_inv is not None
+        ):
+            roffted_data = apply_pv360_one_shot_phase_correction(
+                roffted_data,
+                inv_a,
+                one_shot_odd_inv,
+                one_shot_even_inv,
+                optimize=True,
+                smooth_motion_phase_between_shots=smooth_motion_phase_between_shots,
+            )
 
-        # Reshape and coil-combine
-        if sr_data.dim() == 4:
-            sr_reshaped = sr_data.permute(0, 1, 3, 2)  # [PE, RO, image, channel]
-            result.images = coil_combine(sr_reshaped.squeeze(2))
-            result.imag_low = coil_combine(sr_reshaped.squeeze(2))
-        else:
-            result.images = sr_data.squeeze()
-            result.imag_low = sr_data.squeeze()
+        whole_fixed_signal_post_rofft = roffted_data
+        sr_data = mult_mat_tensor(inv_a, whole_fixed_signal_post_rofft)
+        images = _coil_combine_sr(sr_data, pe, ro, num_images)
+        imag_low = _coil_combine_origin(whole_fixed_signal_post_rofft, pe, ro, slice_num2, array_num2)
 
-    return result
+        images = _remove_readout_zero_fill(images, size_orig)
+
+        if one_shot_odd_inv is not None and one_shot_even_inv is not None:
+            spen_az["OneShotOddInvAZ"] = one_shot_odd_inv
+            spen_az["OneShotEvenInvAZ"] = one_shot_even_inv
+        spen_az["tmpInvAZ"] = inv_a
+        spen_az["tmpAFinal"] = a_final
+
+        last_images = images
+        last_origin = imag_origin
+        last_low = imag_low
+
+    if last_images is None or last_origin is None or last_low is None:
+        raise ValueError(f"No echoes were available for reconstruction in {fid_dir}")
+
+    return SpenReconResult(
+        images=last_images,
+        imag_origin=last_origin,
+        imag_low=last_low,
+        spen_az=spen_az,
+        kfield=kfield_np,
+    )
+
+
+def orient_pv360_spen_image(images: torch.Tensor | np.ndarray) -> np.ndarray:
+    """Apply the final ``pv360.m`` orientation: ``flip(flip(images,1),2)``."""
+    if isinstance(images, torch.Tensor):
+        arr = images.detach().cpu().numpy()
+    else:
+        arr = np.asarray(images)
+    return np.flip(np.flip(arr, axis=0), axis=1)

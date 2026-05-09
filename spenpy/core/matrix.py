@@ -8,6 +8,20 @@ import numpy as np
 from spenpy.core.sinc import math_sinc
 
 
+def _real_dtype_from(*values) -> torch.dtype:
+    for value in values:
+        if isinstance(value, torch.Tensor) and torch.is_floating_point(value):
+            return value.dtype
+    return torch.float64
+
+
+def _device_from(*values) -> torch.device:
+    for value in values:
+        if isinstance(value, torch.Tensor):
+            return value.device
+    return torch.device("cpu")
+
+
 @torch.no_grad()
 def calcSRMatrixApprox(
     MaxPhase: float,
@@ -27,7 +41,13 @@ def calcSRMatrixApprox(
         IdxPositions: pixel center positions
         PartitionsUsed: partition borders
     """
-    DefaultZeroThreshold = 10 * torch.finfo(torch.float32).eps
+    dtype = _real_dtype_from(k, Partitions)
+    device = _device_from(k, Partitions)
+    MaxPhase = torch.as_tensor(MaxPhase, dtype=dtype, device=device)
+    k = torch.as_tensor(k, dtype=dtype, device=device)
+    Partitions = torch.as_tensor(Partitions, dtype=dtype, device=device)
+
+    DefaultZeroThreshold = 10 * torch.finfo(dtype).eps
 
     if ZeroThreshold is None:
         ZeroThreshold = DefaultZeroThreshold
@@ -35,7 +55,10 @@ def calcSRMatrixApprox(
     aEffective = MaxPhase / (Partitions[-1] - Partitions[0]) ** 2
 
     if b is None:
-        b = -(2 * aEffective * Partitions[1] + k[0])
+        # MATLAB default: sample at stationary point, middle of pixel.
+        b = -(2 * aEffective * Partitions[0] * (1 - 1 / NumPixels) + k[0])
+    else:
+        b = torch.as_tensor(b, dtype=dtype, device=device)
 
     Partitions = Partitions.reshape(-1, 1)
     IdxPositions = (Partitions[:-1] + Partitions[1:]) / 2
@@ -63,7 +86,7 @@ def calcSRMatrixApprox(
     HighOrder2[ZeroLinCoeffMatIdxs] = (2 / 3) * deltaMat[ZeroLinCoeffMatIdxs] ** 3
 
     DerivativeOrder1 = (
-        2j / LinCoeffMat**2
+        2j / LinCoeffMat.to(torch.complex128 if dtype == torch.float64 else torch.complex64) ** 2
         * (
             torch.sin(LinCoeff_x_delta_Mat)
             - LinCoeff_x_delta_Mat * torch.cos(LinCoeff_x_delta_Mat)
@@ -96,23 +119,31 @@ def calcInvA(
         InvA: weighted adjoint reconstruction operator [NumPE, NumPE]
         AFinal: encoding matrix
     """
+    dtype = _real_dtype_from(a_rad2cmsqr, LPE, ShiftPE, ky1RelativePos, GaussRelativeWidth)
+    device = _device_from(a_rad2cmsqr, LPE, ShiftPE, ky1RelativePos, GaussRelativeWidth)
+    a_rad2cmsqr = torch.as_tensor(a_rad2cmsqr, dtype=dtype, device=device)
+    LPE = torch.as_tensor(LPE, dtype=dtype, device=device)
+    ShiftPE = torch.as_tensor(ShiftPE, dtype=dtype, device=device)
+    ky1RelativePos = torch.as_tensor(ky1RelativePos, dtype=dtype, device=device)
+    GaussRelativeWidth = torch.as_tensor(GaussRelativeWidth, dtype=dtype, device=device)
+
     MaxPhase = a_rad2cmsqr * LPE**2
 
     NumPixels = NumPE
     NumPixelsFinal = NumPE
 
     Partitions = SPENAcquireSign * torch.linspace(
-        -LPE / 2, LPE / 2, NumPixels + 1
+        -LPE.item() / 2, LPE.item() / 2, NumPixels + 1, dtype=dtype, device=device
     ) + ShiftPE / 10
     PartitionsFinal = SPENAcquireSign * torch.linspace(
-        -LPE / 2, LPE / 2, NumPixelsFinal + 1
+        -LPE.item() / 2, LPE.item() / 2, NumPixelsFinal + 1, dtype=dtype, device=device
     ) + ShiftPE / 10
 
     ky = (
         -2
         * SPENAcquireSign
         * a_rad2cmsqr
-        * torch.arange(NumPE).float()
+        * torch.arange(NumPE, dtype=dtype, device=device)
         * LPE
         / NumPE
     )

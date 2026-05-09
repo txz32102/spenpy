@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 spenpy = "spenpy.cli.pv360:main"
+spenpy-pv360-full = "spenpy.cli.pv360_full:main"
 
 [tool.setuptools.packages.find]
 include = ["spenpy*"]

@@ -86,6 +86,7 @@ def read_bruker_kspace_pv360_fid_multichannel(fid_dir: str) -> np.ndarray:
 
     xsize = int(matrix_size[0])
     ysize = int(matrix_size[1])
+    matrix_size = [xsize, ysize, zsize]
 
     # Read raw binary data
     # PV360 uses rawdata.job0, older formats use 'fid'
@@ -104,11 +105,11 @@ def read_bruker_kspace_pv360_fid_multichannel(fid_dir: str) -> np.ndarray:
     channel_num = 1
 
     # Route to method-specific parser
-    if method_name in ("flash",):
+    if method_name.endswith("flash"):
         kfield = _parse_flash(data, xsize, ysize, zsize, temp_num_echo)
-    elif method_name in ("rare",):
+    elif method_name.endswith("rare"):
         kfield = _parse_rare(data, xsize, ysize, zsize, temp_num_echo, fid_dir)
-    elif method_name in ("epi", "<user:lucioepi>"):
+    elif method_name.endswith("epi") or method_name == "user:lucioepi":
         kfield = _parse_epi(
             data, xsize, ysize, zsize, n_segments,
             temp_num_echo, channel_num, matrix_size,
@@ -226,6 +227,13 @@ def _zero_fill_1d(data, target_size, axis=0):
         data_zf[tuple(sl)] = data
 
     return data_zf
+
+
+def _expand_trailing_singletons(src, target_ndim):
+    """Add trailing singleton axes so MATLAB-style singleton dims broadcast."""
+    while src.ndim < target_ndim:
+        src = src[..., np.newaxis]
+    return src
 
 
 def _reorder_slices(kfield, obj_order_list, matrix_size):
@@ -628,9 +636,11 @@ def _parse_spen_multi_echo_odd_single(data, xsize, ysize, zsize,
         )
         half = _matlab_round(trunc / 2)
         if trunc % 2 != 0:
-            kfield_zf[half:matrix_size[0] - half, :, :, :, :] = kfield
+            target = kfield_zf[half:matrix_size[0] - half, :, :, :, :]
+            target[...] = _expand_trailing_singletons(kfield, target.ndim)
         else:
-            kfield_zf[half:matrix_size[0] - half, :, :, :, :] = kfield
+            target = kfield_zf[half:matrix_size[0] - half, :, :, :, :]
+            target[...] = _expand_trailing_singletons(kfield, target.ndim)
         kfield = kfield_zf
     else:
         ms = list(d.shape[1:])
@@ -862,9 +872,11 @@ def _parse_nont2_odd_single(data, xsize, ysize, zsize,
         )
         half = _matlab_round(trunc / 2)
         if trunc % 2 != 0:
-            kfield_zf[half:matrix_size[0] - half, :, :, :] = kfield
+            target = kfield_zf[half:matrix_size[0] - half, :, :, :]
+            target[...] = _expand_trailing_singletons(kfield, target.ndim)
         else:
-            kfield_zf[half:matrix_size[0] - half, :, :, :] = kfield
+            target = kfield_zf[half:matrix_size[0] - half, :, :, :]
+            target[...] = _expand_trailing_singletons(kfield, target.ndim)
         kfield = kfield_zf
     else:
         ms = list(d.shape[1:])
