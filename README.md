@@ -130,6 +130,32 @@ corr[:, 1::2, :] = even
 recon = torch.matmul(InvA, corr)
 ```
 
+The simulator can also load YAML profiles for scanner-like synthetic training
+data:
+
+```python
+from spenpy.spen import spen
+
+sim = spen.from_yaml("spenpy/configs/scanner_like.yaml", seed=123)
+corrupted, phase_map, good_lr, meta = sim.sim(
+    img.unsqueeze(0),
+    return_phase_map=True,
+    return_good_lr_image=True,
+    return_metadata=True,
+)
+```
+
+Packaged profiles live in `spenpy/configs/`:
+
+* `legacy_like.yaml` keeps behavior close to the original demo.
+* `scanner_like.yaml` uses the included Bruker PV360 scans as the default
+  synthetic-training regime.
+* `aggressive_training.yaml` widens artifact ranges for robustness testing.
+
+See [`docs/simulation_yaml.md`](docs/simulation_yaml.md) for the full YAML
+schema and [`docs/scanner_parameter_notes.md`](docs/scanner_parameter_notes.md)
+for the scanner-parameter rationale.
+
 The full walkthrough — including a discussion of *why* `InvA @ AFinal`
 is not the identity matrix and *why* phase correction must precede
 `InvA` — is in [`demo.ipynb`](demo.ipynb).

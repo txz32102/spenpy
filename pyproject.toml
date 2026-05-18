@@ -14,6 +14,7 @@ dependencies = [
     "torch>=2.0",
     "scipy>=1.10",
     "pillow>=9.0",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +29,9 @@ spenpy-pv360-full = "spenpy.cli.pv360_full:main"
 
 [tool.setuptools.packages.find]
 include = ["spenpy*"]
+
+[tool.setuptools.package-data]
+spenpy = ["configs/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

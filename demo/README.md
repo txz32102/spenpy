@@ -14,9 +14,10 @@ The goal of these demos is to:
    FFT image, the SR encoding matrix, and the final SR-corrected image.
 4. **Compare Python vs MATLAB** outputs numerically and visually.
 
-> The simulation API in [`../demo.ipynb`](../demo.ipynb) is unrelated and
-> remains untouched. It is for synthesising SPEN-degraded images from a
-> ground-truth picture, not for reconstructing Bruker data.
+> The simulation API in [`../demo.ipynb`](../demo.ipynb) is separate from
+> this Bruker reconstruction pipeline. It now supports YAML-driven synthetic
+> artifact profiles for training data, while this folder remains focused on
+> reconstructing real PV360 scanner data.
 
 ---
 

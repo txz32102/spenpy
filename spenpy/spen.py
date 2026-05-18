@@ -368,3 +368,17 @@ class spen:
             return final_rxyacq_ROFFT, phase_map
         else:
             return final_rxyacq_ROFFT
+
+
+from spenpy.sim.spen_sim import SpenSim as _ConfigurableSpenSim
+
+
+class spen(_ConfigurableSpenSim):
+    """Backward-compatible name for the YAML-configurable simulator.
+
+    Existing code can keep using ``from spenpy.spen import spen`` and the
+    historical constructor arguments.  New code may pass ``config=...`` or use
+    ``spen.from_yaml(...)`` through the inherited :class:`SpenSim` API.
+    """
+
+    pass
