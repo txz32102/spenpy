@@ -102,7 +102,14 @@ def process_rare_epi(file_dir: str, scan_id: int, export_dir: str, save_name: st
     return image_data
 
 
-def process_spen(file_dir: str, scan_id: int, export_dir: str, spen_index: int):
+def process_spen(
+    file_dir: str,
+    scan_id: int,
+    export_dir: str,
+    spen_index: int,
+    traj_scan_id: int | None = None,
+    recon_flavor: str = "pv360",
+):
     """Process a single SPEN scan.
 
     MATLAB:
@@ -125,6 +132,10 @@ def process_spen(file_dir: str, scan_id: int, export_dir: str, spen_index: int):
 
     spen_dir = os.path.join(file_dir, str(scan_id), "")
     print(f"  Processing SPEN scan {spen_index}: {spen_dir}")
+    traj_dir = None
+    if traj_scan_id is not None:
+        traj_dir = os.path.join(file_dir, str(traj_scan_id), "")
+        print(f"    Trajectory scan: {traj_dir}")
 
     # Read parameters (equivalent to MATLAB ReadPVParam)
     n_segments = read_pv_param(spen_dir, "NSegments")
@@ -134,7 +145,7 @@ def process_spen(file_dir: str, scan_id: int, export_dir: str, spen_index: int):
         n_segments = n_segments[0]
     n_segments = int(n_segments)
 
-    epi_traj = read_pv_param(spen_dir, "PVM_EpiTrajAdjkx")
+    epi_traj = read_pv_param(traj_dir or spen_dir, "PVM_EpiTrajAdjkx")
     print(f"    NSegments: {n_segments}")
     print(f"    EpiTrajAdjkx: {epi_traj is not None}")
 
@@ -150,7 +161,15 @@ def process_spen(file_dir: str, scan_id: int, export_dir: str, spen_index: int):
 
     from spenpy.recon.spen_recon import orient_pv360_spen_image, reconstruct_odd_segments
 
-    recon = reconstruct_odd_segments(spen_dir)
+    if recon_flavor not in {"pv360", "pv5"}:
+        raise ValueError(f"Unsupported recon_flavor: {recon_flavor}")
+
+    recon = reconstruct_odd_segments(
+        spen_dir,
+        traj_dir=traj_dir,
+        regrid_flavor="pv5" if recon_flavor == "pv5" else "pv360",
+        smooth_motion_phase_between_shots=recon_flavor != "pv5",
+    )
     image_spen = orient_pv360_spen_image(recon.images)
 
     def to_numpy(value):

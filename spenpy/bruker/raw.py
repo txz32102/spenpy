@@ -215,9 +215,9 @@ def _zero_fill_1d(data, target_size, axis=0):
 
     if trunc % 2 != 0:
         # odd trunc: MATLAB round(trunc/2):end-round(trunc/2)
-        # 0-based: half : target_size - half
+        # 0-based: half - 1 : target_size - half
         sl = [slice(None)] * data.ndim
-        sl[axis] = slice(half, target_size - half)
+        sl[axis] = slice(half - 1, target_size - half)
         data_zf[tuple(sl)] = data
     else:
         # even trunc: MATLAB round(trunc/2)+1:end-round(trunc/2)
@@ -380,7 +380,7 @@ def _parse_epi_single(data, xsize, ysize, zsize,
         half = _matlab_round(trunc / 2)
         if trunc % 2 != 0:
             d_reshaped = d.reshape(2, xsize, ysize, zsize, 1, temp_num_echo, order="F")
-            d_reshaped[:, half:xsize - half, :, :, :, :] = src
+            d_reshaped[:, half - 1:xsize - half, :, :, :, :] = src
             d = d_reshaped.reshape(-1)
         else:
             d_reshaped = d.reshape(2, xsize, ysize, zsize, 1, temp_num_echo, order="F")
@@ -636,7 +636,7 @@ def _parse_spen_multi_echo_odd_single(data, xsize, ysize, zsize,
         )
         half = _matlab_round(trunc / 2)
         if trunc % 2 != 0:
-            target = kfield_zf[half:matrix_size[0] - half, :, :, :, :]
+            target = kfield_zf[half - 1:matrix_size[0] - half, :, :, :, :]
             target[...] = _expand_trailing_singletons(kfield, target.ndim)
         else:
             target = kfield_zf[half:matrix_size[0] - half, :, :, :, :]
@@ -700,7 +700,7 @@ def _parse_nont2_even(data, xsize, ysize, zsize, n_segments,
             half = _matlab_round(trunc / 2)
             if kfield.ndim == 4:
                 if trunc % 2 != 0:
-                    kfield_zf[half:matrix_size[0] - half, :, :, :] = kfield
+                    kfield_zf[half - 1:matrix_size[0] - half, :, :, :] = kfield
                 else:
                     kfield_zf[half:matrix_size[0] - half, :, :, :] = kfield
             kfield = kfield_zf
@@ -798,7 +798,10 @@ def _parse_nont2_odd(data, xsize, ysize, zsize, n_segments,
             )
             half = _matlab_round(trunc / 2)
             if kfield.ndim == 4:
-                kfield_zf[half:matrix_size[0] - half, :, :, :] = kfield
+                if trunc % 2 != 0:
+                    kfield_zf[half - 1:matrix_size[0] - half, :, :, :] = kfield
+                else:
+                    kfield_zf[half:matrix_size[0] - half, :, :, :] = kfield
             kfield = kfield_zf
         else:
             ms = list(d.shape[1:])
@@ -872,7 +875,7 @@ def _parse_nont2_odd_single(data, xsize, ysize, zsize,
         )
         half = _matlab_round(trunc / 2)
         if trunc % 2 != 0:
-            target = kfield_zf[half:matrix_size[0] - half, :, :, :]
+            target = kfield_zf[half - 1:matrix_size[0] - half, :, :, :]
             target[...] = _expand_trailing_singletons(kfield, target.ndim)
         else:
             target = kfield_zf[half:matrix_size[0] - half, :, :, :]
@@ -901,8 +904,8 @@ def _apply_zero_fill_3plus(kfield, kfield_zf, trunc, half):
     if trunc % 2 != 0:
         sl_src = [slice(None)] * nd
         sl_dest = [slice(None)] * nd
-        sl_src[0] = slice(half, kfield_zf.shape[0] - half)
-        sl_dest[0] = slice(half, kfield_zf.shape[0] - half)
+        sl_src[0] = slice(half - 1, kfield_zf.shape[0] - half)
+        sl_dest[0] = slice(half - 1, kfield_zf.shape[0] - half)
         kfield_zf[tuple(sl_dest)] = kfield
     else:
         sl_dest = [slice(None)] * nd

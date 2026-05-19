@@ -20,7 +20,7 @@ from spenpy.bruker.param import read_pv_param
 from spenpy.bruker.raw import read_bruker_kspace_pv360_fid_multichannel
 from spenpy.core.matrix import calcInvA
 from spenpy.fft.transform import fft_kspace_to_xspace, fft_xspace_to_kspace
-from spenpy.recon.gridding import one_d_regridding_pv360
+from spenpy.recon.gridding import one_d_regridding_pv360, one_d_regridding_pv6
 from spenpy.recon.phase import apply_pv360_one_shot_phase_correction
 from spenpy.utils.coil_combine import coil_combine
 from spenpy.utils.tensor import mult_mat_tensor
@@ -76,8 +76,11 @@ def _regrid_readout_if_needed(
     fid_dir: str,
     n_segments: int,
     matrix_size: list[int],
+    traj_dir: str | None = None,
+    regrid_flavor: str = "pv360",
 ) -> np.ndarray:
-    traj = read_pv_param(fid_dir, "PVM_EpiTrajAdjkx")
+    traj_param_dir = fid_dir if traj_dir is None else str(Path(traj_dir))
+    traj = read_pv_param(traj_param_dir, "PVM_EpiTrajAdjkx")
     if traj is None:
         return kfield
 
@@ -89,10 +92,17 @@ def _regrid_readout_if_needed(
         (matrix_size[0], matrix_size[1], kfield.shape[2], kfield.shape[3], kfield.shape[4]),
         dtype=np.complex128,
     )
+    if regrid_flavor == "pv5":
+        regrid_func = one_d_regridding_pv6
+    elif regrid_flavor == "pv360":
+        regrid_func = one_d_regridding_pv360
+    else:
+        raise ValueError(f"Unsupported regrid_flavor: {regrid_flavor}")
+
     for echo in range(kfield.shape[4]):
         for arr in range(kfield.shape[3]):
             for sl in range(kfield.shape[2]):
-                out[:, :, sl, arr, echo] = one_d_regridding_pv360(
+                out[:, :, sl, arr, echo] = regrid_func(
                     kfield[:, :, sl, arr, echo],
                     traj_arr,
                     n_segments,
@@ -168,6 +178,7 @@ def _coil_combine_sr(
 
 def reconstruct_odd_segments(
     fid_dir: str,
+    traj_dir: str | None = None,
     kfield: np.ndarray | torch.Tensor | None = None,
     device: str = "cpu",
     debug_show: bool = False,
@@ -175,6 +186,9 @@ def reconstruct_odd_segments(
     smooth_motion_phase_between_shots: bool = True,
     b_amp_correct: bool = False,
     zf: int = 0,
+    spen_gy: float | None = None,
+    spat_enc_duration: float | None = None,
+    regrid_flavor: str = "pv360",
 ) -> SpenReconResult:
     """Reconstruct an odd-segment PV360 SPEN scan.
 
@@ -198,8 +212,18 @@ def reconstruct_odd_segments(
     fov_cm = [v / 10 for v in fov]
     lpe = fov_cm[1]
 
-    spen_gy = _as_float(read_pv_param(fid_dir, "SpenGyGaussStren"), 0.0)
-    tp = _as_float(read_pv_param(fid_dir, "SpatEncDuration"), 0.0) / 1000
+    spen_gy_param = read_pv_param(fid_dir, "SpenGyGaussStren")
+    tp_param = read_pv_param(fid_dir, "SpatEncDuration")
+    if spen_gy is None:
+        if spen_gy_param is None:
+            raise ValueError(f"Missing SpenGyGaussStren in {fid_dir} and no manual override provided")
+        spen_gy = _as_float(spen_gy_param)
+    if spat_enc_duration is None:
+        if tp_param is None:
+            raise ValueError(f"Missing SpatEncDuration in {fid_dir} and no manual override provided")
+        tp = _as_float(tp_param) / 1000
+    else:
+        tp = spat_enc_duration / 1000
     ppe = -_as_float(read_pv_param(fid_dir, "PVM_SPackArrPhase1Offset"), 0.0) / 10
     shift_pe = -ppe * 10
 
@@ -216,7 +240,14 @@ def reconstruct_odd_segments(
         kfield_np = np.asarray(kfield)
 
     kfield_np = _ensure_5d_kfield(kfield_np)
-    kfield_np = _regrid_readout_if_needed(kfield_np, fid_dir, n_segments, matrix_size)
+    kfield_np = _regrid_readout_if_needed(
+        kfield_np,
+        fid_dir,
+        n_segments,
+        matrix_size,
+        traj_dir=traj_dir,
+        regrid_flavor=regrid_flavor,
+    )
     kfield_np, size_orig = _zero_fill_readout(kfield_np, zf)
     kfield_np = kfield_np.astype(np.complex64, copy=False)
 

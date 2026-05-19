@@ -34,14 +34,27 @@ Examples:
         --output /tmp/pv360_python --max-spen 3
 
     # Reconstruct only specific SPEN indices:
-    python spenpy/demo/01_run_pv360_pipeline.py \\
-        --output /tmp/pv360_python --spen-index 1,5,10
+    python spenpy/demo/01_run_pv360_pipeline.py --file-dir /home/data1/musong/workspace/python/spen_recons/spen_matlab/data/20231208_103719_lxj_spen_mouse4_231208_2_1_1 --output /tmp/pv360_python --spen-index 1,5,10
+    
+    # Reconstruct all SPEN indices:
+    python spenpy/demo/01_run_pv360_pipeline.py --file-dir /home/data1/musong/workspace/python/spen_recons/spen_matlab/data/20231208_114947_lxj_spen_mouse5_2312085_2_1_1 --output /tmp/pv360_python
+    
+    # pv5 data
+    python spenpy/demo/01_run_pv360_pipeline.py --file-dir /home/data1/musong/workspace/python/spen_recons/spen_matlab/data/lxj_spen_230907.lJ2 --output /tmp/pv5_python
+    
+    # unknown PV version (auto-detect)
+    python spenpy/demo/01_run_pv360_pipeline.py --file-dir /home/data1/musong/workspace/python/spen_recons/spen_matlab/data/lxj_SPEN_TEST_230401.ja2 --output /tmp/unknown_pv_python
 """
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+if str(_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from spenpy.cli.pv360_full import DEFAULT_DATA_DIR, run_pv360_full
 
@@ -89,6 +102,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip PNG generation (only emit .mat files).",
     )
+    parser.add_argument(
+        "--pv-version",
+        choices=["auto", "pv360", "pv5"],
+        default="auto",
+        help="Interpret datalist/regridding as PV360 or PV5 (default: auto).",
+    )
     return parser.parse_args()
 
 
@@ -123,6 +142,7 @@ def main() -> None:
         max_spen=args.max_spen,
         skip_existing=args.skip_existing,
         continue_on_error=args.continue_on_error,
+        pv_version=args.pv_version,
     )
 
     print()

@@ -68,6 +68,9 @@ which is a thin wrapper around the same entry point with annotated
 | [`02_single_spen_reconstruction.py`](02_single_spen_reconstruction.py) | Reconstruct one SPEN scan, inspect `Imag_low` / `Imag_origin` / `Image_SPEN`, save `.mat` + PNG. | The body of the `for ispen = …` loop in `pv360.m` |
 | [`03_inspect_intermediate_steps.py`](03_inspect_intermediate_steps.py) | Walk through the reconstruction stage by stage: raw k-space → 1D regridding → readout FFT → SR matrix → final image. | The pipeline inside `Function_Process_NewPE_SPEN_OddNumWithMask_bruker_PV360.m` |
 | [`04_compare_with_matlab.py`](04_compare_with_matlab.py) | Compare a Python `.mat` against an existing MATLAB `.mat` (correlation / NRMSE / max-abs-diff + difference image). | What `imshow3Dfull` / a side-by-side `imagesc` would tell you visually. |
+| [`05_visualize_phase_maps.py`](05_visualize_phase_maps.py) | Visualize real PV360 odd/even phase-correction diagnostics, masks, and fitted `SmoothPhase` maps. | MATLAB phase-debugging figures around `EvenOddFix*` and `SmoothPhase`. |
+| [`06_traditional_reconstruction_step_by_step.ipynb`](06_traditional_reconstruction_step_by_step.ipynb) | Notebook storyboard: synthetic phase truth, estimated phase, k-space, ROFFT image, `AFinal`, `InvA`, error maps, metrics, and optional real PV360 diagnostics. | A teaching version of the traditional reconstruction pipeline with intermediate images exposed. |
+| [`07_real_scanner_reconstruction_step_by_step.ipynb`](07_real_scanner_reconstruction_step_by_step.ipynb) | Notebook walkthrough on the real PV360 scanner dataset: RARE/EPI context, raw k-space, regridded k-space, `Imag_origin`, `Imag_low`, fitted phase maps, masks, `Image_SPEN`, and matrix diagnostics. | A real-data teaching version of the traditional PV360 reconstruction pipeline. |
 
 ---
 
@@ -147,6 +150,12 @@ Both can be overridden with CLI flags. Examples:
 .venv/bin/python spenpy/demo/04_compare_with_matlab.py \
     --spen-index 1 \
     --output /tmp/pv360_python_compare
+
+# 5) Open the notebook walkthrough
+jupyter lab spenpy/demo/06_traditional_reconstruction_step_by_step.ipynb
+
+# 6) Open the real scanner data notebook walkthrough
+jupyter lab spenpy/demo/07_real_scanner_reconstruction_step_by_step.ipynb
 ```
 
 Each script prints where the `.mat`, `.png` and `.json` files were

@@ -1,137 +1,183 @@
 # SPENPy
 
-**SPENPy** is a Python library for **SPEN (Spatiotemporally-Encoded) MRI
-reconstruction**, with two complementary use cases under one roof:
+SPENPy is a Python toolkit for SPEN (Spatiotemporally Encoded) MRI work. It
+covers two related workflows:
 
-1. **Simulation** — generate SPEN-encoded / phase-corrupted images from a
-   ground-truth picture, build the encoding matrices `AFinal` / `InvA`,
-   and study reconstruction trade-offs. Useful for training deep
-   ghost-correction networks and for teaching. Entry point:
-   [`demo.ipynb`](demo.ipynb).
-2. **Real Bruker PV360 reconstruction** — read raw `fid` /
-   `2dseq` data acquired with a Bruker PV360 scanner, run the same
-   reconstruction MATLAB does in
-   [`spen_matlab/pv360.m`](../spen_matlab/pv360.m), and write
-   MATLAB-compatible `.mat` files plus PNG figures. Entry point:
-   [`demo/`](demo/) (markdown + four annotated scripts) and the
-   `spenpy.cli.pv360_full` CLI.
+1. Simulation: generate SPEN-encoded and phase-corrupted images from a clean
+   reference image, build `AFinal` and `InvA`, and test reconstruction or
+   ghost-correction ideas.
+2. Bruker reconstruction: read ParaVision PV5 or PV360 studies, reconstruct
+   SPEN scans, and export MATLAB-compatible `.mat` files plus optional PNG
+   summaries.
 
-> The MATLAB MEX kernel `FGG_Convolution1D.c` used inside MATLAB's
-> NUFFT step is reimplemented in **pure Python** in
-> [`spenpy/recon/gridding.py`](spenpy/recon/gridding.py). Numerically
-> faithful to the MATLAB output (`abs_corr > 0.999` against the
-> reference `.mat`), at the cost of some speed.
-
----
+The reconstruction code follows the MATLAB reference scripts in
+[`spen_matlab/pv5.m`](../spen_matlab/pv5.m) and
+[`spen_matlab/pv360.m`](../spen_matlab/pv360.m). The MATLAB MEX kernel used by
+`FGG_1d_type1` is replaced by a pure-Python implementation in
+[`spenpy/recon/gridding.py`](spenpy/recon/gridding.py), so the package does not
+need compiled MATLAB extensions.
 
 ## Installation
 
-The project ships as a normal Python package. From the repository root:
+From this package directory:
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install -e ./spenpy
+.venv/bin/pip install -e .[dev]
+.venv/bin/pip install matplotlib
 ```
 
-The minimum runtime dependencies (resolved from `pyproject.toml`) are:
+If you are working from the parent workspace where this package is available as
+`./spenpy`, install it with:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -e ./spenpy[dev]
+.venv/bin/pip install matplotlib
+```
+
+Core runtime dependencies are declared in [`pyproject.toml`](pyproject.toml).
+`matplotlib` is optional, but needed for PNG figures and most demos.
 
 | Package | Purpose |
 | --- | --- |
-| `numpy>=1.24` | Numerical arrays |
-| `torch>=2.0` | Encoding matrix math, GPU acceleration, `mult_mat_tensor` |
-| `scipy>=1.10` | `.mat` I/O, smoothing splines used in EPI regridding |
-| `pillow>=9.0` | Demo image loading |
+| `numpy` | Array operations and Bruker binary reshaping |
+| `torch` | Encoding matrices, FFT path, and tensor reconstruction |
+| `scipy` | `.mat` I/O and trajectory smoothing |
+| `pillow` | Demo image loading |
+| `PyYAML` | Simulation configuration files |
+| `matplotlib` | Optional demo and reconstruction figures |
 
-Optional extras:
-
-```bash
-.venv/bin/pip install -e ./spenpy[dev]   # adds pytest + pytest-cov
-.venv/bin/pip install matplotlib         # required for the demos
-```
-
-Two console scripts are exposed:
+Console entry points:
 
 ```bash
-spenpy             # = python -m spenpy.cli.pv360            (no figures)
-spenpy-pv360-full  # = python -m spenpy.cli.pv360_full       (with PNG figures)
+spenpy             # python -m spenpy.cli.pv360
+spenpy-pv360-full  # python -m spenpy.cli.pv360_full
 ```
 
----
+In the `spen_recons` workspace, the existing `uv.lock` environment can also be
+used directly:
 
-## Quick start
+```bash
+uv run python spenpy/demo/01_run_pv360_pipeline.py --help
+```
 
-### A. Reconstruct real Bruker PV360 SPEN data
+## Quick Start
 
-This is the closest analogue to running `pv360.m` on a Bruker dataset.
-Given a study folder with `datalist.txt` / `<scan_id>/fid` /
-`<scan_id>/method` / `<scan_id>/pdata/1/2dseq` files, dump everything to
-`/tmp/pv360_python`:
+### Reconstruct Bruker PV5 or PV360 Data
+
+Use the full pipeline when you want the same top-level outputs as the MATLAB
+scripts: RARE, EPI, every selected SPEN scan, a JSON summary, and optional PNG
+figures.
 
 ```bash
 python -m spenpy.cli.pv360_full \
     --file-dir <bruker_study_dir> \
-    --output   /tmp/pv360_python
+    --output /tmp/spen_recon
+```
+
+From the `spen_recons` workspace:
+
+```bash
+uv run python spenpy/demo/01_run_pv360_pipeline.py \
+    --file-dir <bruker_study_dir> \
+    --output /tmp/spen_recon
+```
+
+SPENPy auto-detects the supported datalist layouts:
+
+| Mode | Datalist convention | Reconstruction behavior |
+| --- | --- | --- |
+| PV360 | `RARE, EPI, SPEN, SPEN, ...` | Each SPEN scan supplies its own trajectory and uses PV360 regridding. |
+| PV5 | `RARE, trajectory, SPEN, trajectory, SPEN, ...` | Each SPEN scan is paired with the preceding trajectory scan and uses the PV5/PV6 regridding variant. |
+
+You can force the interpretation if auto-detection is not what you want:
+
+```bash
+python -m spenpy.cli.pv360_full \
+    --file-dir <bruker_study_dir> \
+    --output /tmp/spen_recon \
+    --pv-version pv5
+```
+
+Useful run controls:
+
+```bash
+# Reconstruct only the first three selected SPEN scans.
+python -m spenpy.cli.pv360_full --file-dir <study> --output /tmp/spen --max-spen 3
+
+# Reconstruct specific 1-based SPEN indices.
+python -m spenpy.cli.pv360_full --file-dir <study> --output /tmp/spen --spen-index 1,5,10
+
+# Continue after a failed scan and record errors in the summary JSON.
+python -m spenpy.cli.pv360_full --file-dir <study> --output /tmp/spen --continue-on-error
+
+# Skip PNG generation.
+python -m spenpy.cli.pv360_full --file-dir <study> --output /tmp/spen --no-figures
 ```
 
 Output layout:
 
 ```text
-/tmp/pv360_python/
-├── ratbrain_RARE.mat
-├── ratbrain_EPI.mat
-├── ratbrain_SPEN_96_1.mat ... ratbrain_SPEN_96_<N>.mat
-├── pv360_full_summary.json
-└── figures/
-    ├── ratbrain_RARE.png
-    ├── ratbrain_EPI.png
-    └── ratbrain_SPEN_96_1.png ... ratbrain_SPEN_96_<N>.png
+/tmp/spen_recon/
++-- ratbrain_RARE.mat
++-- ratbrain_EPI.mat
++-- ratbrain_SPEN_96_1.mat
++-- ratbrain_SPEN_96_2.mat
++-- ...
++-- pv360_full_summary.json
++-- figures/
+    +-- ratbrain_RARE.png
+    +-- ratbrain_EPI.png
+    +-- ratbrain_SPEN_96_1.png
+    +-- ...
 ```
 
-Equivalent programmatic API:
+Programmatic API:
 
 ```python
 from spenpy.cli.pv360_full import run_pv360_full
 
-run_pv360_full(
+summary = run_pv360_full(
     file_dir="<bruker_study_dir>",
-    export_dir="/tmp/pv360_python",
+    export_dir="/tmp/spen_recon",
     save_figures=True,
+    pv_version="auto",  # "auto", "pv5", or "pv360"
 )
 ```
 
-For more options (single SPEN index, skip-existing, continue-on-error,
-in-process figure generation, side-by-side parity check against MATLAB),
-see the four illustrative demo scripts in [`demo/`](demo/) and their
-[`README.md`](demo/README.md).
-
-### B. Simulate SPEN data from a ground-truth image
+### Simulate SPEN Data
 
 ```python
-import torch, torchvision.transforms as T
+import numpy as np
+import torch
 from PIL import Image
 from spenpy.spen import spen
 
-img = T.ToTensor()(Image.open("spenpy/data/brain.png"))[0]  # (H, W) grayscale
+img_pil = Image.open("spenpy/data/brain.png").convert("L")
+img = torch.from_numpy(np.asarray(img_pil, dtype=np.float32) / 255.0)
 
-# Encoding matrices
 InvA, AFinal = spen(acq_point=list(img.shape)).get_InvA()
 
-# Full simulation (corrupted ROFFT image + phase estimate + clean reference)
 corrupted, phase_map, good_lr = spen(noise_level=0.01).sim(
     img.unsqueeze(0),
     return_phase_map=True,
     return_good_lr_image=True,
 )
 
-# Recon — order matters: phase correction first, then InvA
-even = corrupted[:, 1::2, :] * torch.exp(-1j * phase_map)
+# Phase correction must happen before the InvA reconstruction.
 corr = corrupted.clone()
-corr[:, 1::2, :] = even
+corr[:, 1::2, :] = corrupted[:, 1::2, :] * torch.exp(-1j * phase_map)
 recon = torch.matmul(InvA, corr)
 ```
 
-The simulator can also load YAML profiles for scanner-like synthetic training
-data:
+Simulation profiles are stored in [`spenpy/configs/`](spenpy/configs/):
+
+| Profile | Purpose |
+| --- | --- |
+| `legacy_like.yaml` | Keep behavior close to the original notebook demo. |
+| `scanner_like.yaml` | Use a scanner-like 96 x 96 Bruker regime for synthetic training. |
+| `aggressive_training.yaml` | Expand artifact ranges for robustness testing. |
 
 ```python
 from spenpy.spen import spen
@@ -145,156 +191,157 @@ corrupted, phase_map, good_lr, meta = sim.sim(
 )
 ```
 
-Packaged profiles live in `spenpy/configs/`:
+See [`demo.ipynb`](demo.ipynb) for the simulation walkthrough,
+[`docs/simulation_yaml.md`](docs/simulation_yaml.md) for the YAML schema, and
+[`docs/scanner_parameter_notes.md`](docs/scanner_parameter_notes.md) for scanner
+parameter notes.
 
-* `legacy_like.yaml` keeps behavior close to the original demo.
-* `scanner_like.yaml` uses the included Bruker PV360 scans as the default
-  synthetic-training regime.
-* `aggressive_training.yaml` widens artifact ranges for robustness testing.
-
-See [`docs/simulation_yaml.md`](docs/simulation_yaml.md) for the full YAML
-schema and [`docs/scanner_parameter_notes.md`](docs/scanner_parameter_notes.md)
-for the scanner-parameter rationale.
-
-The full walkthrough — including a discussion of *why* `InvA @ AFinal`
-is not the identity matrix and *why* phase correction must precede
-`InvA` — is in [`demo.ipynb`](demo.ipynb).
-
----
-
-## Repository layout
+## Repository Layout
 
 ```text
 spenpy/
-├── README.md                 ← you are here
-├── demo.ipynb                ← simulation walkthrough (runnable Jupyter notebook)
-├── demo/                     ← real Bruker PV360 reconstruction demos
-│   ├── README.md             ← detailed walkthrough + pv360.m mapping
-│   ├── 01_run_pv360_pipeline.py       ← full pv360.m mimic
-│   ├── 02_single_spen_reconstruction.py
-│   ├── 03_inspect_intermediate_steps.py
-│   └── 04_compare_with_matlab.py
-├── spenpy/                   ← package source
-│   ├── spen.py               ← encoding matrices + simulation
-│   ├── bruker/               ← PV360 raw fid / 2dseq / param readers
-│   │   ├── image.py          ← read 2dseq + visu_pars (RARE / EPI)
-│   │   ├── param.py          ← Bruker parameter file parser
-│   │   └── raw.py            ← read fid + reshape (multi-channel, multi-slice)
-│   ├── core/                 ← SR encoding-matrix builders
-│   │   ├── matrix.py         ← calcSRMatrixApprox, calcInvA
-│   │   └── sinc.py
-│   ├── fft/transform.py      ← MATLAB-style fftshift(fft(ifftshift(.))) wrappers
-│   ├── recon/                ← reconstruction pipeline
-│   │   ├── gridding.py       ← 1D regridding + pure-Python NUFFT
-│   │   ├── phase.py          ← per-shot motion phase correction
-│   │   └── spen_recon.py     ← main reconstruct_odd_segments() + orient
-│   ├── utils/                ← coil combine, zero fill, polyfit, smoothing
-│   ├── sim/spen_sim.py       ← simulation helpers
-│   └── cli/                  ← pv360.m equivalents
-│       ├── pv360.py          ← run_pv360 (.mat only)
-│       └── pv360_full.py     ← run_pv360_full (.mat + PNG)
-├── tests/                    ← pytest suite (see "Testing" below)
-├── pyproject.toml
-├── setup.py
-└── LICENSE                   ← MIT
++-- README.md
++-- demo.ipynb
++-- demo/
+|   +-- README.md
+|   +-- 01_run_pv360_pipeline.py
+|   +-- 02_single_spen_reconstruction.py
+|   +-- 03_inspect_intermediate_steps.py
+|   +-- 04_compare_with_matlab.py
+|   +-- 05_visualize_phase_maps.py
++-- docs/
++-- spenpy/
+|   +-- bruker/        # Bruker parameter, 2dseq, and raw FID readers
+|   +-- cli/           # End-to-end reconstruction entry points
+|   +-- core/          # SPEN encoding matrix builders
+|   +-- fft/           # MATLAB-style FFT wrappers
+|   +-- recon/         # Regridding, phase correction, and reconstruction
+|   +-- sim/           # Simulation helpers
+|   +-- utils/         # Coil combine, zero filling, smoothing, tensor helpers
+|   +-- spen.py        # Main simulation-facing class
++-- tests/
++-- pyproject.toml
++-- setup.py
++-- LICENSE
 ```
 
----
+## Module Map
 
-## Module map
-
-| Layer | Module | Highlights |
+| Area | Module | Main entry points |
 | --- | --- | --- |
-| Bruker I/O | `spenpy.bruker.image` | `read_bruker_2dseq` — RARE / EPI 2dseq with `visu_pars` parsing, slope/offset rescaling, Fortran reshape order. |
-| Bruker I/O | `spenpy.bruker.raw` | `read_bruker_kspace_pv360_fid_multichannel` — multi-channel `fid` reader matching `ReadBrukerkSpace_PV360_fid_multichannel.m` byte-for-byte. |
-| Bruker I/O | `spenpy.bruker.param` | `read_pv_param` — read any field from `acqp` / `method` / `visu_pars`. |
-| Encoding | `spenpy.core.matrix` | `calcSRMatrixApprox`, `calcInvA` — closed-form SR matrix and weighted adjoint. |
-| FFT | `spenpy.fft.transform` | `fft_kspace_to_xspace` / `fft_xspace_to_kspace` (PyTorch, MATLAB convention). |
-| Reconstruction | `spenpy.recon.gridding` | `one_d_regridding_pv360` + `fgg_1d_type1` — pure-Python NUFFT replacing the MATLAB MEX. |
-| Reconstruction | `spenpy.recon.phase` | One-shot odd-segment phase correction (`apply_pv360_one_shot_phase_correction`). |
-| Reconstruction | `spenpy.recon.spen_recon` | `reconstruct_odd_segments` — top-level pipeline + `orient_pv360_spen_image`. |
-| Utilities | `spenpy.utils.tensor` | `mult_mat_tensor` — batched matrix-tensor product (replaces MATLAB `MultMatTensor`). |
-| Utilities | `spenpy.utils.coil_combine` | `coil_combine` — adaptive coil combination port of `coilCombinebao.m`. |
-| Utilities | `spenpy.utils.zero_fill` | `zero_filling_pv6`, `rm_zero_filling_pv6`. |
-| Simulation | `spenpy.spen` | `spen` class — `sim`, `get_InvA`, `get_phase_map`. |
-| CLI | `spenpy.cli.pv360` | Programmatic `run_pv360`, `process_rare_epi`, `process_spen`, `read_datalist`. |
-| CLI | `spenpy.cli.pv360_full` | `run_pv360_full` — same plus PNG figures and richer arg parsing. |
+| Bruker I/O | `spenpy.bruker.param` | `read_pv_param` |
+| Bruker I/O | `spenpy.bruker.image` | `read_bruker_2dseq` |
+| Bruker I/O | `spenpy.bruker.raw` | `read_bruker_kspace_pv360_fid_multichannel` |
+| Reconstruction | `spenpy.recon.gridding` | `one_d_regridding_pv360`, `one_d_regridding_pv6`, `fgg_1d_type1` |
+| Reconstruction | `spenpy.recon.phase` | `apply_pv360_one_shot_phase_correction` |
+| Reconstruction | `spenpy.recon.spen_recon` | `reconstruct_odd_segments`, `orient_pv360_spen_image` |
+| Encoding | `spenpy.core.matrix` | `calcSRMatrixApprox`, `calcInvA` |
+| Utilities | `spenpy.utils.tensor` | `mult_mat_tensor` |
+| Utilities | `spenpy.utils.coil_combine` | `coil_combine` |
+| Utilities | `spenpy.utils.zero_fill` | `zero_filling_pv6`, `rm_zero_filling_pv6` |
+| Simulation | `spenpy.spen` | `spen.sim`, `spen.get_InvA`, `spen.from_yaml` |
+| CLI | `spenpy.cli.pv360` | `run_pv360`, `process_spen`, `process_rare_epi` |
+| CLI | `spenpy.cli.pv360_full` | `run_pv360_full`, figure writers, PV5/PV360 datalist handling |
 
----
+## MATLAB to Python Mapping
 
-## MATLAB ↔ Python mapping (full pipeline)
-
-| MATLAB step (`pv360.m` / `Function_Process_NewPE_SPEN_OddNumWithMask_bruker_PV360.m`) | Python equivalent |
+| MATLAB reference | Python equivalent |
 | --- | --- |
-| `addpath(genpath('spen')); addpath(genpath('pvtools'));` | `import spenpy` |
-| `datalist = textread('datalist.txt', '%u');` | `spenpy.cli.pv360.read_datalist` |
-| `imageObj = ImageDataObject(...).data; permute([2 1 3 4])` | `spenpy.bruker.image.read_bruker_2dseq` + axis swap inside `process_rare_epi` |
-| `ReadBrukerkSpace_PV360_fid_multichannel(spen_dir)` | `spenpy.bruker.raw.read_bruker_kspace_pv360_fid_multichannel` |
-| `oneD_regriding_PV360(kField, EpiTraj, NSeg, MS)` | `spenpy.recon.gridding.one_d_regridding_pv360` |
-| `FGG_1d_type1(...)` + `FGG_Convolution1D.mexa64` | `spenpy.recon.gridding.fgg_1d_type1` (pure-Python NUFFT — no MEX) |
-| `Zero_filling_PV6(kField, ZF)` | `spenpy.utils.zero_fill.zero_filling_pv6` |
-| `FFTKSpace2XSpace(CmplxData, 2)` | `spenpy.fft.transform.fft_kspace_to_xspace(..., dim=1)` |
-| `[InvA, AFinal] = calcInvA(...)` | `spenpy.core.matrix.calcInvA` |
-| `MultMatTensor(InvA, ROFFTedData)` | `spenpy.utils.tensor.mult_mat_tensor` |
+| `textread('datalist.txt', '%u')` | `spenpy.cli.pv360.read_datalist` |
+| `ImageDataObject(...).data` | `spenpy.bruker.image.read_bruker_2dseq` |
+| `ReadPVParam(...)` | `spenpy.bruker.param.read_pv_param` |
+| `ReadBrukerkSpace_PV360_fid_multichannel(...)` | `spenpy.bruker.raw.read_bruker_kspace_pv360_fid_multichannel` |
+| `oneD_regriding_PV360(...)` | `spenpy.recon.gridding.one_d_regridding_pv360` |
+| `oneD_regriding_PV6(...)` in the PV5 path | `spenpy.recon.gridding.one_d_regridding_pv6` |
+| `FGG_1d_type1(...)` plus MATLAB MEX convolution | `spenpy.recon.gridding.fgg_1d_type1` |
+| `FFTKSpace2XSpace(...)` | `spenpy.fft.transform.fft_kspace_to_xspace` |
+| `calcInvA(...)` | `spenpy.core.matrix.calcInvA` |
+| `MultMatTensor(...)` | `spenpy.utils.tensor.mult_mat_tensor` |
 | `coilCombinebao(...)` | `spenpy.utils.coil_combine.coil_combine` |
-| `Image_SPEN = flip(flip(images, 1), 2)` | `spenpy.recon.spen_recon.orient_pv360_spen_image` |
-| `imshow3Dfull(...)`, `imagesc(...)` | `matplotlib` figures via `save_volume_figure` / `save_spen_figure` |
-| `save(fullfile(...), 'Imag_low', 'Imag_origin', 'Image_SPEN', 'SPEN_AZ')` | `scipy.io.savemat(...)` inside `process_spen` |
+| `flip(flip(images,1),2)` | `spenpy.recon.spen_recon.orient_pv360_spen_image` |
+| `save(..., 'Imag_low', 'Imag_origin', 'Image_SPEN', 'SPEN_AZ')` | `scipy.io.savemat` inside `process_spen` |
 
-### Orientation note
+### Orientation Note
 
-`pv360.m` only applies `flip(flip(.,1),2)` to `Image_SPEN`, leaving
-`Imag_low` / `Imag_origin` in the raw orientation, so the three panels
-in the saved `.mat` are 180° rotated relative to each other. SPENPy
-applies the same flip to **all three** images so figures rendered from
-the resulting `.mat` files share a consistent anatomical orientation.
-If you need the unflipped low-resolution arrays for byte-exact MATLAB
-compatibility, call `spenpy.recon.reconstruct_odd_segments(...)`
-directly and use `recon.imag_low` / `recon.imag_origin`, which are the
-pre-flip tensors.
+The MATLAB PV360 script flips only `Image_SPEN`, while `Imag_low` and
+`Imag_origin` remain in the raw orientation. SPENPy applies the same final
+orientation to all three exported images so the generated figures line up
+anatomically. If you need the pre-flip tensors, call
+`reconstruct_odd_segments(...)` directly and read `recon.imag_low` and
+`recon.imag_origin`.
 
----
-
-## Testing
-
-```bash
-.venv/bin/pip install pytest
-.venv/bin/pytest spenpy/tests             # unit tests only (no MATLAB needed)
-.venv/bin/pytest spenpy/tests/test_pv360_matlab_parity.py
-                                           # ↑ requires matlab on PATH + Bruker data
-```
-
-| Test file | What it covers | MATLAB needed? |
-| --- | --- | --- |
-| `tests/test_core.py` | `calcSRMatrixApprox`, `calcInvA` shape / dtype / weighted-adjoint identity | No |
-| `tests/test_fft.py` | `fft_kspace_to_xspace` / `fft_xspace_to_kspace` round-trip & MATLAB-shift convention | No |
-| `tests/test_tensor.py` | `mult_mat_tensor` (2D/3D/4D); `zero_filling_pv6` round-trip | No |
-| `tests/test_pv360_matlab_parity.py` | Bit-exact equality of `read_datalist`, `process_rare_epi` and `read_bruker_kspace_pv360_fid_multichannel` against MATLAB output. SPEN reconstruction: `abs_corr > 0.999` for `Imag_low` / `Imag_origin` / `Image_SPEN`. | Yes |
-| `tests/verify_pv360_reconstruction.py` | Visual + numeric verification harness (not collected by pytest). Renders Python vs MATLAB panels and writes `*_metrics.json`. | Optional |
-
----
-
-## Demos at a glance
+## Demos
 
 | File | Purpose |
 | --- | --- |
-| [`demo.ipynb`](demo.ipynb) | Simulation walkthrough on a 2D image: build `AFinal`/`InvA`, run `sim()`, demonstrate phase correction (right vs wrong order), inspect `\|InvA @ AFinal\|`, fast forward path. |
-| [`demo/01_run_pv360_pipeline.py`](demo/01_run_pv360_pipeline.py) | Full pv360.m mimic — RARE + EPI + every SPEN scan → `.mat` + PNG. |
-| [`demo/02_single_spen_reconstruction.py`](demo/02_single_spen_reconstruction.py) | Reconstruct one SPEN scan; inspect `Imag_low` / `Imag_origin` / `Image_SPEN`. |
-| [`demo/03_inspect_intermediate_steps.py`](demo/03_inspect_intermediate_steps.py) | Multi-panel view: raw k-space → regrid → readout-FFT → SR matrix → final image. |
-| [`demo/04_compare_with_matlab.py`](demo/04_compare_with_matlab.py) | Numeric + visual parity check against an existing MATLAB `.mat`. |
+| [`demo.ipynb`](demo.ipynb) | Simulation walkthrough on a 2D image. |
+| [`demo/01_run_pv360_pipeline.py`](demo/01_run_pv360_pipeline.py) | Full RARE, EPI, and SPEN export for PV5/PV360 studies. |
+| [`demo/02_single_spen_reconstruction.py`](demo/02_single_spen_reconstruction.py) | Reconstruct one SPEN scan and inspect the main outputs. |
+| [`demo/03_inspect_intermediate_steps.py`](demo/03_inspect_intermediate_steps.py) | Inspect raw k-space, regridding, readout FFT, SR matrix, and final image. |
+| [`demo/04_compare_with_matlab.py`](demo/04_compare_with_matlab.py) | Compare Python `.mat` output against MATLAB output. |
+| [`demo/05_visualize_phase_maps.py`](demo/05_visualize_phase_maps.py) | Experimental phase-correction diagnostics and visualization. |
 
----
+## Testing and Validation
+
+Install test dependencies first:
+
+```bash
+.venv/bin/pip install -e .[dev]
+```
+
+Pure Python unit tests:
+
+```bash
+.venv/bin/python -m pytest \
+    tests/test_core.py \
+    tests/test_fft.py \
+    tests/test_tensor.py \
+    tests/test_sim_config.py
+```
+
+Or, with `uv`:
+
+```bash
+uv run --extra dev python -m pytest \
+    tests/test_core.py \
+    tests/test_fft.py \
+    tests/test_tensor.py \
+    tests/test_sim_config.py
+```
+
+Bruker and MATLAB-oriented checks are environment dependent:
+
+| File | How to use it |
+| --- | --- |
+| `tests/test_pv360.py` | Script-style smoke test. Run it with an explicit Bruker study path instead of collecting it directly with pytest. |
+| `tests/test_pv360_matlab_parity.py` | Parity checks against local MATLAB exports; requires local data and MATLAB outputs. |
+| `tests/verify_pv360_reconstruction.py` | Visual and numeric verification harness that writes comparison figures and metrics. |
+| `tests/test_phase_diagnostics.py` | Optional diagnostics tests for phase-correction internals. |
+
+Example smoke test:
+
+```bash
+python tests/test_pv360.py <bruker_study_dir> --component full --output /tmp/spen_smoke
+```
+
+## Current Scope
+
+The primary reconstruction path covers odd-segment SPEN scans, which are the
+datasets used by the included PV5 and PV360 workflows. Even-segment SPEN scans
+still route to the MATLAB `Function_Process_NormalmultiSPEN_bruker_PV6` path and
+are not implemented in Python yet.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT. See [`LICENSE`](LICENSE).
 
 ## References
 
-* Liu et al., *Unsupervised deep learning model for correcting Nyquist
-  ghosts of single-shot spatiotemporal encoding*, included in this
-  folder as
-  [`Liu et al. - Unsupervised deep learning model …`](Liu%20et%20al.%20-%20Unsupervised%20deep%20learning%20model%20for%20correcting%20Nyquist%20ghosts%20of%20single‐shot%20spatiotemporal%20encodin.pdf).
-* MATLAB reference: [`spen_matlab/SPEN_RECONSTRUCTION_GUIDE.md`](../spen_matlab/SPEN_RECONSTRUCTION_GUIDE.md)
-  and [`spen_matlab/pv360.m`](../spen_matlab/pv360.m).
+* Liu et al., *Unsupervised deep learning model for correcting Nyquist ghosts
+  of single-shot spatiotemporal encoding*, included in this folder as
+  the Liu et al. PDF.
+* MATLAB reference guide:
+  [`spen_matlab/SPEN_RECONSTRUCTION_GUIDE.md`](../spen_matlab/SPEN_RECONSTRUCTION_GUIDE.md).
+* MATLAB entry points:
+  [`spen_matlab/pv5.m`](../spen_matlab/pv5.m) and
+  [`spen_matlab/pv360.m`](../spen_matlab/pv360.m).

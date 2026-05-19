@@ -25,9 +25,7 @@ For a chosen SPEN index, this script:
 Examples:
 
     # Compare an existing python output against MATLAB:
-    python spenpy/demo/04_compare_with_matlab.py --spen-index 1 \\
-        --python-export-dir /tmp/pv360_python \\
-        --matlab-export-dir /home/data1/musong/workspace/python/spen_recons/spen_matlab/export_data/pv360
+    python spenpy/demo/04_compare_with_matlab.py --spen-index 1 --python-export-dir /tmp/pv360_python --matlab-export-dir /home/data1/musong/workspace/python/spen_recons/spen_matlab/export_data/pv360
 
     # Reconstruct on the fly (uses spen_matlab/data/...) and compare:
     python spenpy/demo/04_compare_with_matlab.py --spen-index 1 --reconstruct

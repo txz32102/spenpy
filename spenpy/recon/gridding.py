@@ -43,29 +43,52 @@ def smooth_trajectory(epi_traj: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return values[5:-5], values
 
 
-def one_d_regridding_pv360(
+def _place_regridded_block(
+    kfield_regrid: np.ndarray,
+    target_size: int,
+    placement_size: int,
+) -> np.ndarray:
+    """Center a MATLAB-style regridded block in a zero-filled readout."""
+    n_pe = kfield_regrid.shape[1]
+    kfield_zf = np.zeros((target_size, n_pe), dtype=np.complex128)
+
+    # MATLAB computes the insertion window from a rounded trajectory maximum.
+    # SciPy's spline can move that by one sample, so use the actual block size
+    # when needed to preserve a valid centered insertion.
+    trunc = target_size - placement_size
+    if target_size - trunc != kfield_regrid.shape[0]:
+        trunc = target_size - kfield_regrid.shape[0]
+
+    half = _matlab_round(trunc / 2)
+    if trunc % 2 != 0:
+        start = half - 1
+        stop = target_size - half
+    else:
+        start = half
+        stop = target_size - half
+    kfield_zf[start:stop, :] = kfield_regrid
+    return kfield_zf
+
+
+def _one_d_regridding(
     kfield_slice: np.ndarray,
     epi_traj: np.ndarray,
     n_segments: int,
     matrix_size: list,
+    *,
+    reverse_offset: str,
+    placement_offset: str,
 ) -> np.ndarray:
-    """1D regridding of ParaVision data based on trajectory measurements.
-
-    Args:
-        kfield_slice: [readout, PE] slice of k-space data
-        epi_traj: [1, N] measured EPI trajectory
-        n_segments: number of SPEN segments
-        matrix_size: target matrix size
-
-    Returns:
-        Regridded k-space [target_ro, PE]
-    """
-    # Smooth trajectory
+    """Shared implementation for PV5/PV6 and PV360 regridding variants."""
     epi_traj_s, values = smooth_trajectory(epi_traj)
 
-    # Build reversed trajectory for alternating lines
     epi_traj_1 = epi_traj_s
-    epi_traj_2 = -np.flip(epi_traj_s) + np.max(values)
+    if reverse_offset == "values":
+        epi_traj_2 = -np.flip(epi_traj_s) + np.max(values)
+    elif reverse_offset == "smoothed":
+        epi_traj_2 = -np.flip(epi_traj_s) + np.max(epi_traj_1)
+    else:
+        raise ValueError(f"Unknown reverse_offset: {reverse_offset}")
 
     max_traj = _matlab_round(float(np.max(epi_traj_1)))
     n_pe = kfield_slice.shape[1]
@@ -97,20 +120,48 @@ def one_d_regridding_pv360(
     kfield_regrid[:3, :] = 0
     kfield_regrid[-3:, :] = 0
 
-    # Zero-fill to target matrix size
     target_size = matrix_size[0]
-    kfield_zf = np.zeros((target_size, n_pe), dtype=np.complex128)
-    trunc = target_size - _matlab_round(float(np.max(values)))
-    half = _matlab_round(trunc / 2)
-    if trunc % 2 != 0:
-        start = half - 1
-        stop = target_size - half
+    if placement_offset == "values":
+        placement_size = _matlab_round(float(np.max(values)))
+    elif placement_offset == "smoothed":
+        placement_size = max_traj
     else:
-        start = half
-        stop = target_size - half
-    kfield_zf[start:stop, :] = kfield_regrid
+        raise ValueError(f"Unknown placement_offset: {placement_offset}")
+    return _place_regridded_block(kfield_regrid, target_size, placement_size)
 
-    return kfield_zf
+
+def one_d_regridding_pv360(
+    kfield_slice: np.ndarray,
+    epi_traj: np.ndarray,
+    n_segments: int,
+    matrix_size: list,
+) -> np.ndarray:
+    """1D regridding matching ``oneD_regriding_PV360.m``."""
+    return _one_d_regridding(
+        kfield_slice,
+        epi_traj,
+        n_segments,
+        matrix_size,
+        reverse_offset="values",
+        placement_offset="values",
+    )
+
+
+def one_d_regridding_pv6(
+    kfield_slice: np.ndarray,
+    epi_traj: np.ndarray,
+    n_segments: int,
+    matrix_size: list,
+) -> np.ndarray:
+    """1D regridding matching the PV5/PV6 MATLAB path."""
+    return _one_d_regridding(
+        kfield_slice,
+        epi_traj,
+        n_segments,
+        matrix_size,
+        reverse_offset="smoothed",
+        placement_offset="smoothed",
+    )
 
 
 def fgg_1d_type1(

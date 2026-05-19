@@ -25,12 +25,12 @@ from typing import Iterable
 import numpy as np
 import scipy.io
 
+from spenpy.bruker.param import read_pv_param
 from spenpy.cli.pv360 import process_rare_epi, process_spen, read_datalist
 
 
 DEFAULT_DATA_DIR = Path(
-    "/home/data1/musong/workspace/python/spen_recons/spen_matlab/data/"
-    "20240321_204022_lxj_spen_mouse_240321_1_1_1"
+    "/home/data1/musong/workspace/python/spen_recons/spen_matlab/data/20240321_204022_lxj_spen_mouse_240321_1_1_1"
 )
 
 
@@ -149,15 +149,59 @@ def save_spen_figure(
     return figure_path
 
 
+SpenItem = tuple[int, int, int | None, str]
+
+
+def _is_spen_scan(file_dir: Path, scan_id: int) -> bool:
+    return read_pv_param(str(file_dir / str(scan_id)), "SpenGyGaussStren") is not None
+
+
+def _detect_pv_version(file_dir: Path, spen_tail: list[int]) -> str:
+    """Infer whether ``datalist.txt`` uses PV360 or PV5 scan ordering."""
+    if len(spen_tail) >= 3:
+        first_is_spen = _is_spen_scan(file_dir, spen_tail[0])
+        second_is_spen = _is_spen_scan(file_dir, spen_tail[1])
+        third_is_spen = _is_spen_scan(file_dir, spen_tail[2])
+        if first_is_spen and not second_is_spen and third_is_spen:
+            return "pv5"
+    return "pv360"
+
+
+def _build_spen_items(
+    file_dir: Path,
+    epi_id: int,
+    spen_tail: list[int],
+    pv_version: str,
+) -> tuple[str, list[SpenItem]]:
+    if pv_version == "auto":
+        pv_version = _detect_pv_version(file_dir, spen_tail)
+    if pv_version not in {"pv360", "pv5"}:
+        raise ValueError(f"Unsupported pv_version: {pv_version}")
+
+    if pv_version == "pv360":
+        return pv_version, [
+            (spen_index, scan_id, None, "pv360")
+            for spen_index, scan_id in enumerate(spen_tail, start=1)
+        ]
+
+    pair_source = [epi_id, *spen_tail]
+    items: list[SpenItem] = []
+    for spen_index, offset in enumerate(range(0, len(pair_source) - 1, 2), start=1):
+        traj_id = pair_source[offset]
+        scan_id = pair_source[offset + 1]
+        items.append((spen_index, scan_id, traj_id, "pv5"))
+    return pv_version, items
+
+
 def _selected_spen_items(
-    spen_ids: list[int],
+    spen_items: list[SpenItem],
     spen_indices: Iterable[int] | None,
     max_spen: int | None,
-) -> list[tuple[int, int]]:
-    indexed = list(enumerate(spen_ids, start=1))
+) -> list[SpenItem]:
+    indexed = list(spen_items)
     if spen_indices:
         wanted = set(spen_indices)
-        indexed = [(idx, scan_id) for idx, scan_id in indexed if idx in wanted]
+        indexed = [item for item in indexed if item[0] in wanted]
     if max_spen is not None:
         indexed = indexed[:max_spen]
     return indexed
@@ -173,6 +217,7 @@ def run_pv360_full(
     max_spen: int | None = None,
     skip_existing: bool = False,
     continue_on_error: bool = False,
+    pv_version: str = "auto",
 ) -> dict[str, object]:
     """Run a full ``pv360.m``-like export and visualization pass."""
     file_dir = Path(file_dir)
@@ -193,7 +238,8 @@ def run_pv360_full(
         figure_dir.mkdir(parents=True, exist_ok=True)
 
     rare_id, epi_id, spen_ids = read_datalist(str(file_dir))
-    selected_spen = _selected_spen_items(spen_ids, spen_indices, max_spen)
+    detected_pv_version, spen_items = _build_spen_items(file_dir, epi_id, spen_ids, pv_version)
+    selected_spen = _selected_spen_items(spen_items, spen_indices, max_spen)
 
     print(f"Input directory: {file_dir}")
     print(f"Export directory: {export_dir}")
@@ -201,7 +247,13 @@ def run_pv360_full(
         print(f"Figure directory: {figure_dir}")
     print(f"RARE scan ID: {rare_id}")
     print(f"EPI scan ID: {epi_id}")
-    print(f"SPEN scan IDs selected: {[scan_id for _, scan_id in selected_spen]}")
+    print(f"PV reconstruction mode: {detected_pv_version}")
+    print(f"SPEN scan IDs selected: {[scan_id for _, scan_id, _, _ in selected_spen]}")
+    if detected_pv_version == "pv5":
+        print(
+            "PV5 trajectory pairs: "
+            f"{[(traj_id, scan_id) for _, scan_id, traj_id, _ in selected_spen]}"
+        )
 
     outputs: dict[str, object] = {
         "file_dir": str(file_dir),
@@ -209,6 +261,7 @@ def run_pv360_full(
         "figure_dir": str(figure_dir) if save_figures else None,
         "rare_scan_id": rare_id,
         "epi_scan_id": epi_id,
+        "pv_version": detected_pv_version,
         "spen": [],
         "errors": [],
     }
@@ -238,13 +291,20 @@ def run_pv360_full(
         save_volume_figure(epi_data, figure_dir / "ratbrain_EPI.png", "EPI Image", show)
 
     print("\nProcessing SPEN data series...")
-    for spen_index, scan_id in selected_spen:
+    for spen_index, scan_id, traj_id, recon_flavor in selected_spen:
         spen_mat = export_dir / f"ratbrain_SPEN_96_{spen_index}.mat"
         try:
             if skip_existing and spen_mat.exists():
                 print(f"  Skipping existing SPEN {spen_index}: {spen_mat}")
             else:
-                process_spen(str(file_dir), scan_id, str(export_dir), spen_index)
+                process_spen(
+                    str(file_dir),
+                    scan_id,
+                    str(export_dir),
+                    spen_index,
+                    traj_scan_id=traj_id,
+                    recon_flavor=recon_flavor,
+                )
 
             fig_path = None
             if save_figures:
@@ -258,12 +318,18 @@ def run_pv360_full(
                 {
                     "spen_index": spen_index,
                     "scan_id": scan_id,
+                    "trajectory_scan_id": traj_id,
                     "mat_file": str(spen_mat),
                     "figure": str(fig_path) if fig_path is not None else None,
                 }
             )
         except Exception as exc:
-            entry = {"spen_index": spen_index, "scan_id": scan_id, "error": repr(exc)}
+            entry = {
+                "spen_index": spen_index,
+                "scan_id": scan_id,
+                "trajectory_scan_id": traj_id,
+                "error": repr(exc),
+            }
             outputs["errors"].append(entry)
             if not continue_on_error:
                 raise
@@ -329,6 +395,12 @@ def main() -> None:
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--no-figures", action="store_true")
     parser.add_argument("--show", action="store_true", help="Show figures interactively.")
+    parser.add_argument(
+        "--pv-version",
+        choices=["auto", "pv360", "pv5"],
+        default="auto",
+        help="Interpret datalist/regridding as PV360 or PV5. Default: auto.",
+    )
     args = parser.parse_args()
 
     run_pv360_full(
@@ -341,6 +413,7 @@ def main() -> None:
         max_spen=args.max_spen,
         skip_existing=args.skip_existing,
         continue_on_error=args.continue_on_error,
+        pv_version=args.pv_version,
     )
 
 

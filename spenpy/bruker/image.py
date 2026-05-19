@@ -140,6 +140,11 @@ def _read_2dseq_binary(filepath: str, visu: dict) -> np.ndarray:
     slope = visu.get("VisuCoreDataSlope", None)
     offs = visu.get("VisuCoreDataOffs", None)
 
+    if slope is not None:
+        slope = np.atleast_1d(slope)
+    if offs is not None:
+        offs = np.atleast_1d(offs)
+
     if slope is not None and len(slope) == n_frames and n_frames > 1:
         slope_arr = np.array(slope, dtype=data_2d.dtype)
         if offs is not None and len(offs) == n_frames:
